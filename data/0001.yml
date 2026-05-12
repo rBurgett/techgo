@@ -1,0 +1,44 @@
+# Sample episode. The file name doesn't matter — `number` and the other fields
+# below are what count. `techgo new` scaffolds files like this as 0002.yml, etc.
+
+number: 1
+title: "Hello, Tech.Go"
+
+# Optional. If omitted, the page URL is /episodes/0001.html. If set (lowercase
+# letters, digits, hyphens), the page URL is /episodes/<slug>.html. Must be
+# unique across episodes. Media files stay number-keyed regardless.
+slug: "hello-techgo"
+
+shortDescription: "Isaac and his dad kick things off: who we are and what this show is about."
+
+# RFC3339 timestamp with an explicit offset.
+pubDate: 2026-05-11T12:00:00Z
+
+# Optional stable feed id. Default: "techgo-0001". Don't change it once published.
+# guid: "techgo-0001"
+
+# Optional — omit to inherit site.yml's `explicit`; set true/false only to override.
+# explicit: false
+
+# Optional — this episode's social-share image. Site-relative path: the file
+# lives at static/<image> and is served from /<image> (e.g. the value below means
+# the file static/episodes/0001.png, linked as https://<baseURL>/episodes/0001.png).
+# If omitted, the site-wide og-image.png is used.
+# image: "episodes/0001.png"
+
+# Source media, relative to the project directory. `techgo media` transcodes
+# these into media/out/0001.mp3 (128 kbps CBR) and media/out/0001.mp4 (faststart).
+sourceWav: "media/src/0001.wav"
+sourceMp4: "media/src/0001.mp4"
+
+# Show notes — author-written, rendered as TRUSTED HTML (and as <content:encoded>
+# in the RSS feed). Keep it to safe markup.
+description: |
+  <p>Welcome to <strong>Tech.Go</strong> — a tech podcast where a kid and his dad
+  poke at computers, code, and gadgets together.</p>
+  <p>In this first episode we cover:</p>
+  <ul>
+    <li>Who we are and why we're doing this</li>
+    <li>What kinds of topics to expect</li>
+    <li>How you can follow along</li>
+  </ul>
