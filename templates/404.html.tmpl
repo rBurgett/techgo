@@ -1,0 +1,9 @@
+{{- /* 404.html.tmpl — the not-found page. CloudFront maps a missing object
+       (HTTP 403 from the private S3 REST origin) and a 404 to /404.html. */ -}}
+{{define "content"}}
+<article>
+<h1>404 — Not found</h1>
+<p>That page isn't here. Try the <a href="/">episode list</a> or the
+<a href="/about.html">about page</a>.</p>
+</article>
+{{end}}

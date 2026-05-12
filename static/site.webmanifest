@@ -1,0 +1,12 @@
+{
+  "name": "Tech.Go",
+  "short_name": "Tech.Go",
+  "description": "A nerdy, tech-focused podcast hosted by Isaac and his dad.",
+  "start_url": "/",
+  "display": "browser",
+  "theme_color": "#1a1a1a",
+  "background_color": "#1a1a1a",
+  "icons": [
+    { "src": "/icon-512.png", "type": "image/png", "sizes": "512x512" }
+  ]
+}

@@ -13,7 +13,7 @@ ownerEmail: "ryan@burgettdev.net"    # <itunes:owner><itunes:email> (required by
 baseURL: "https://techgo.example.com"
 
 language: "en-us"
-copyright: "© 2026 Tech.Go"
+copyright: "Tech.Go"
 explicit: false
 
 # Must be an exact Apple Podcasts category string; subcategory is optional.

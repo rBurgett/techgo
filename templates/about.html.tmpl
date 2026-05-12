@@ -1,0 +1,21 @@
+{{- /* about.html.tmpl — the About page. Dot is a render.Page. */ -}}
+{{define "content"}}
+<article>
+<h1>About {{.Site.Title}}</h1>
+<p>{{.Site.Description}}</p>
+<p><strong>{{.Site.Title}}</strong> is made by Isaac and his dad — a kid and his
+dad poking at computers, code, and gadgets together, and recording the result.</p>
+<h2>Contact</h2>
+<p>Questions, corrections, or topic ideas? Email
+<a href="mailto:{{.Site.OwnerEmail}}">{{.Site.OwnerEmail}}</a>.</p>
+{{- if .Site.Social}}
+<h2>Links</h2>
+<ul>
+{{- range $name, $url := .Site.Social}}
+<li><a href="{{$url}}">{{$name}}</a></li>
+{{- end}}
+</ul>
+{{- end}}
+<p>Subscribe in any podcast app with the <a href="{{absURL "feed.rss"}}">RSS feed</a>.</p>
+</article>
+{{end}}

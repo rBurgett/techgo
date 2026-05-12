@@ -1,0 +1,19 @@
+{{- /* index.html.tmpl — home page. Dot is a render.Page; .Episodes is every
+       episode, newest first. */ -}}
+{{define "content"}}
+<h1>{{.Site.Title}}</h1>
+<p class="tagline">{{.Site.Tagline}}</p>
+{{- if not .Episodes}}
+<p>No episodes published yet — check back soon.</p>
+{{- end}}
+{{- range .Episodes}}
+<article class="episode-card">
+<span class="badge">#{{.Number}}</span>
+<h2><a href="/{{.PagePath}}">{{.Title}}</a></h2>
+<p class="meta">{{rfc2822 .PubDate}} · {{durationHMS .AudioDur}}</p>
+<p>{{.ShortDescription}}</p>
+<audio controls preload="none" src="/{{.MP3Path}}"></audio>
+<a class="download" href="/{{.MP3Path}}" download>Download MP3</a>
+</article>
+{{- end}}
+{{end}}

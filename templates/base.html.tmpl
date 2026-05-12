@@ -1,0 +1,51 @@
+{{- /* base.html.tmpl — site layout. Page templates fill {{block "content" .}}
+       and receive a render.Page. Edit freely; this file is not embedded. */ -}}
+<!doctype html>
+<html lang="{{.Site.Language}}">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{.Title}}</title>
+<meta name="description" content="{{.Description}}">
+<link rel="canonical" href="{{.Canonical}}">
+<meta name="theme-color" content="#1a1a1a">
+<meta name="generator" content="techgo">
+<!-- Open Graph -->
+<meta property="og:site_name" content="{{.Site.Title}}">
+<meta property="og:title" content="{{.Title}}">
+<meta property="og:description" content="{{.Description}}">
+<meta property="og:type" content="{{.OGType}}">
+<meta property="og:url" content="{{.Canonical}}">
+<meta property="og:locale" content="en_US">
+<meta property="og:image" content="{{.ImageURL}}">
+<meta property="og:image:alt" content="{{.Title}}">
+{{- if eq .OGType "article"}}
+<meta property="article:published_time" content="{{.PublishedISO}}">
+<meta property="article:author" content="{{.Site.Author}}">
+{{- end}}
+<!-- Twitter / X card -->
+<meta name="twitter:card" content="summary_large_image">
+<meta name="twitter:title" content="{{.Title}}">
+<meta name="twitter:description" content="{{.Description}}">
+<meta name="twitter:image" content="{{.ImageURL}}">
+{{- if .Site.TwitterHandle}}
+<meta name="twitter:site" content="{{.Site.TwitterHandle}}">
+{{- end}}
+<!-- Icons / feed / manifest -->
+<link rel="icon" href="/favicon.ico" sizes="any">
+<link rel="icon" type="image/png" sizes="32x32" href="/favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="/favicon-16.png">
+<link rel="apple-touch-icon" href="/apple-touch-icon.png">
+<link rel="manifest" href="/site.webmanifest">
+<link rel="alternate" type="application/rss+xml" title="{{.Site.Title}} podcast feed" href="{{absURL "feed.rss"}}">
+<link rel="stylesheet" href="/css/style.css">
+{{- if .JSONLD}}
+<script type="application/ld+json">{{.JSONLD}}</script>
+{{- end}}
+</head>
+<body>
+<header><div class="wrap"><a class="wordmark" href="/"><span class="t">Tech</span><span class="g">.go</span></a><nav><a href="/">Episodes</a><a href="/about.html">About</a><a href="/feed.rss">RSS</a></nav></div></header>
+<main>{{block "content" .}}{{end}}</main>
+<footer>© {{year}} {{.Site.Copyright}}</footer>
+</body>
+</html>
