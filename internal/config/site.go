@@ -115,7 +115,13 @@ func (s *Site) normalizeAndValidate() error {
 // it to be an absolute http/https URL with a host and no query string, fragment,
 // or userinfo. It returns the parsed URL.
 func parseAbsHTTPURL(raw string) (*url.URL, error) {
-	u, err := url.Parse(strings.TrimSpace(raw))
+	raw = strings.TrimSpace(raw)
+	// A literal '#' always begins a fragment (RFC 3986); url.Parse drops a bare
+	// trailing '#' and has no ForceFragment flag, so reject it before parsing.
+	if strings.Contains(raw, "#") {
+		return nil, fmt.Errorf("must not contain a fragment")
+	}
+	u, err := url.Parse(raw)
 	if err != nil {
 		return nil, fmt.Errorf("is not a valid URL: %w", err)
 	}

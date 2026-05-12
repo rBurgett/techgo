@@ -113,6 +113,7 @@ func TestLoadSite(t *testing.T) {
 		"non-http baseURL":        "baseURL: \"ftp://nope\"\n",
 		"baseURL with query":      "baseURL: \"https://x.example.com/?a=1\"\n",
 		"baseURL with frag":       "baseURL: \"https://x.example.com/#top\"\n",
+		"baseURL with bare hash":  "baseURL: \"https://x.example.com/#\"\n",
 		"baseURL with userinfo":   "baseURL: \"https://user:pass@x.example.com\"\n",
 		"non-http coverArtURL":    "baseURL: \"https://x.example.com\"\ncoverArtURL: \"file:///tmp/cover.png\"\n",
 		"coverArtURL with query":  "baseURL: \"https://x.example.com\"\ncoverArtURL: \"https://cdn.example.com/c.png?v=1\"\n",
