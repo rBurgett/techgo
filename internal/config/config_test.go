@@ -176,6 +176,16 @@ func TestEpisodeImageValidation(t *testing.T) {
 			t.Errorf("%s: expected LoadEpisodes to fail for image %q", name, image)
 		}
 	}
+
+	// image pointing at a directory must be rejected (it exists, but isn't a file).
+	d := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(d, "static", "episodes", "0001.png"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(d, EpisodesDir, "0001.yml"), mkEp("episodes/0001.png"))
+	if _, err := LoadEpisodes(d); err == nil {
+		t.Error("expected LoadEpisodes to fail when image path is a directory")
+	}
 }
 
 func TestLoadEpisodes(t *testing.T) {

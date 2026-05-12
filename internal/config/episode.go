@@ -169,11 +169,15 @@ func normalizeAndValidateEpisodes(projectDir string, episodes []Episode) error {
 				return fmt.Errorf("%s: image %q must be a relative path inside the project's static/ dir, e.g. \"episodes/0001.png\"", name, ep.Image)
 			}
 			imgPath := filepath.Join(projectDir, "static", filepath.FromSlash(img))
-			if _, err := os.Stat(imgPath); err != nil {
+			fi, err := os.Stat(imgPath)
+			if err != nil {
 				if os.IsNotExist(err) {
 					return fmt.Errorf("%s: image %q not found at %s", name, ep.Image, imgPath)
 				}
 				return fmt.Errorf("%s: image %q: %w", name, ep.Image, err)
+			}
+			if !fi.Mode().IsRegular() {
+				return fmt.Errorf("%s: image %q is not a regular file (%s)", name, ep.Image, imgPath)
 			}
 			ep.Image = img // normalized; AbsURL(ep.Image) is the social-share URL, and the file is at static/<img>
 		}
