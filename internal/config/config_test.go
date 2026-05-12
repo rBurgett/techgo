@@ -101,17 +101,68 @@ func TestLoadSite(t *testing.T) {
 	if _, err := LoadSite(dir2); err == nil {
 		t.Error("expected error for missing required fields")
 	}
-	// Bad baseURL.
-	dir3 := t.TempDir()
-	writeFile(t, filepath.Join(dir3, SiteFileName), `
-title: "T"
-author: "A"
-ownerEmail: "e@x.com"
-category: "Technology"
-baseURL: "ftp://nope"
-`)
-	if _, err := LoadSite(dir3); err == nil {
-		t.Error("expected error for non-http(s) baseURL")
+	// Bad baseURL variants and coverArtURL: each must be rejected.
+	for name, body := range map[string]string{
+		"non-http baseURL":     "baseURL: \"ftp://nope\"\n",
+		"baseURL with query":   "baseURL: \"https://x.example.com/?a=1\"\n",
+		"baseURL with frag":    "baseURL: \"https://x.example.com/#top\"\n",
+		"non-http coverArtURL": "baseURL: \"https://x.example.com\"\ncoverArtURL: \"file:///tmp/cover.png\"\n",
+	} {
+		d := t.TempDir()
+		writeFile(t, filepath.Join(d, SiteFileName),
+			"title: T\nauthor: A\nownerEmail: e@x.com\ncategory: Technology\n"+body)
+		if _, err := LoadSite(d); err == nil {
+			t.Errorf("%s: expected LoadSite to fail", name)
+		}
+	}
+	// Whitespace around baseURL / coverArtURL is trimmed, not rejected.
+	d := t.TempDir()
+	writeFile(t, filepath.Join(d, SiteFileName),
+		"title: T\nauthor: A\nownerEmail: e@x.com\ncategory: Technology\n"+
+			"baseURL: \"  https://x.example.com/  \"\ncoverArtURL: \"  https://cdn.example.com/c.png  \"\n")
+	st, err := LoadSite(d)
+	if err != nil {
+		t.Fatalf("LoadSite with padded URLs: %v", err)
+	}
+	if st.BaseURL != "https://x.example.com" {
+		t.Errorf("BaseURL = %q, want trimmed", st.BaseURL)
+	}
+	if st.CoverArtURL != "https://cdn.example.com/c.png" {
+		t.Errorf("CoverArtURL = %q, want trimmed", st.CoverArtURL)
+	}
+}
+
+func TestEpisodeImageValidation(t *testing.T) {
+	mkEp := func(image string) string {
+		return "number: 1\ntitle: T\npubDate: 2026-01-01T00:00:00Z\n" +
+			"sourceWav: a.wav\nsourceMp4: a.mp4\nimage: \"" + image + "\"\n"
+	}
+
+	// Valid: file exists under static/.
+	good := t.TempDir()
+	writeFile(t, filepath.Join(good, "static", "episodes", "0001.png"), "fakepng")
+	writeFile(t, filepath.Join(good, EpisodesDir, "0001.yml"), mkEp("episodes/0001.png"))
+	eps, err := LoadEpisodes(good)
+	if err != nil {
+		t.Fatalf("LoadEpisodes (valid image): %v", err)
+	}
+	if got, want := eps[0].Image, "episodes/0001.png"; got != want {
+		t.Errorf("normalized Image = %q, want %q", got, want)
+	}
+	if got, want := eps[0].SocialImageURL(&Site{BaseURL: "https://x.example.com"}), "https://x.example.com/episodes/0001.png"; got != want {
+		t.Errorf("SocialImageURL = %q, want %q", got, want)
+	}
+
+	for name, image := range map[string]string{
+		"missing file":   "episodes/missing.png",
+		"escapes static": "../secret.png",
+		"absolute path":  "/etc/passwd",
+	} {
+		d := t.TempDir()
+		writeFile(t, filepath.Join(d, EpisodesDir, "0001.yml"), mkEp(image))
+		if _, err := LoadEpisodes(d); err == nil {
+			t.Errorf("%s: expected LoadEpisodes to fail for image %q", name, image)
+		}
 	}
 }
 

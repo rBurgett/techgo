@@ -85,23 +85,30 @@ func (s *Site) normalizeAndValidate() error {
 		return fmt.Errorf("itunesType must be \"episodic\" or \"serial\", got %q", s.ItunesType)
 	}
 
-	if strings.TrimSpace(s.BaseURL) == "" {
+	base := strings.TrimSpace(s.BaseURL)
+	if base == "" {
 		return fmt.Errorf("baseURL is required")
 	}
-	u, err := url.Parse(strings.TrimSpace(s.BaseURL))
+	u, err := url.Parse(base)
 	if err != nil {
 		return fmt.Errorf("baseURL is not a valid URL: %w", err)
 	}
 	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
 		return fmt.Errorf("baseURL must be an absolute http(s) URL, got %q", s.BaseURL)
 	}
-	// Normalize: drop any path/query/fragment-trailing slash; keep scheme://host[/path].
-	s.BaseURL = strings.TrimRight(u.Scheme+"://"+u.Host+strings.TrimRight(u.Path, "/"), "/")
+	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
+		return fmt.Errorf("baseURL must not contain a query string, fragment, or userinfo, got %q", s.BaseURL)
+	}
+	// Normalize: keep scheme://host[/path] and trim a trailing slash from the path.
+	s.BaseURL = u.Scheme + "://" + u.Host + strings.TrimRight(u.Path, "/")
 
 	if s.CoverArtURL != "" {
-		if cu, err := url.Parse(s.CoverArtURL); err != nil || cu.Scheme == "" || cu.Host == "" {
-			return fmt.Errorf("coverArtURL must be an absolute URL, got %q", s.CoverArtURL)
+		cv := strings.TrimSpace(s.CoverArtURL)
+		cu, err := url.Parse(cv)
+		if err != nil || (cu.Scheme != "http" && cu.Scheme != "https") || cu.Host == "" {
+			return fmt.Errorf("coverArtURL must be an absolute http(s) URL, got %q", s.CoverArtURL)
 		}
+		s.CoverArtURL = cv
 	}
 	return nil
 }

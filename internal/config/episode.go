@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"regexp"
 	"sort"
@@ -28,7 +29,7 @@ type Episode struct {
 	PubDate          time.Time `yaml:"pubDate"`          // RFC3339 with offset; yaml.v3 parses to time.Time
 	GUID             string    `yaml:"guid"`             // optional stable id; default "techgo-<pad>"
 	Explicit         *bool     `yaml:"explicit"`         // optional; nil = inherit site default
-	Image            string    `yaml:"image"`            // optional; path under static/, used as the social-share image
+	Image            string    `yaml:"image"`            // optional; site-relative path (file lives at static/<image>), used as the social-share image
 	SourceWav        string    `yaml:"sourceWav"`        // path (relative to project dir) to the source .wav
 	SourceMp4        string    `yaml:"sourceMp4"`        // path (relative to project dir) to the source .mp4
 
@@ -79,7 +80,8 @@ func (e Episode) EffectiveExplicit(s *Site) bool {
 }
 
 // SocialImageURL is the absolute URL of this episode's social-share image:
-// the per-episode Image if set, otherwise the site-wide og-image.png.
+// the per-episode Image (a site-relative path; the file lives under static/)
+// if set, otherwise the site-wide og-image.png.
 func (e Episode) SocialImageURL(s *Site) string {
 	if e.Image != "" {
 		return s.AbsURL(e.Image)
@@ -106,7 +108,7 @@ func LoadEpisodes(projectDir string) ([]Episode, error) {
 		episodes = append(episodes, ep)
 	}
 
-	if err := validateEpisodeSet(projectDir, episodes); err != nil {
+	if err := normalizeAndValidateEpisodes(projectDir, episodes); err != nil {
 		return nil, err
 	}
 
@@ -129,10 +131,13 @@ func loadEpisodeFile(path string) (Episode, error) {
 	return ep, nil
 }
 
-func validateEpisodeSet(projectDir string, episodes []Episode) error {
+// normalizeAndValidateEpisodes validates every episode and normalizes the Image
+// field in place (clean, forward-slash, used directly as a site-relative URL path).
+func normalizeAndValidateEpisodes(projectDir string, episodes []Episode) error {
 	byNumber := make(map[int]string)
 	bySlug := make(map[string]string)
-	for _, ep := range episodes {
+	for i := range episodes {
+		ep := &episodes[i]
 		name := filepath.Base(ep.SourceFile)
 
 		if ep.Number <= 0 {
@@ -154,17 +159,15 @@ func validateEpisodeSet(projectDir string, episodes []Episode) error {
 			return fmt.Errorf("%s: slug %q must match %s (lowercase letters, digits, hyphens)", name, ep.Slug, slugRe)
 		}
 		if ep.Image != "" {
-			if filepath.IsAbs(ep.Image) {
-				return fmt.Errorf("%s: image %q must be a path relative to the project's static/ dir", name, ep.Image)
+			img := path.Clean(filepath.ToSlash(ep.Image))
+			if path.IsAbs(img) || img == "." || img == ".." || strings.HasPrefix(img, "../") {
+				return fmt.Errorf("%s: image %q must be a relative path inside the project's static/ dir, e.g. \"episodes/0001.png\"", name, ep.Image)
 			}
-			imgPath := filepath.Join(projectDir, ep.Image)
-			rel, err := filepath.Rel(filepath.Join(projectDir, "static"), imgPath)
-			if err != nil || strings.HasPrefix(rel, "..") {
-				return fmt.Errorf("%s: image %q must live under the project's static/ dir", name, ep.Image)
-			}
+			imgPath := filepath.Join(projectDir, "static", filepath.FromSlash(img))
 			if _, err := os.Stat(imgPath); err != nil {
 				return fmt.Errorf("%s: image %q not found at %s", name, ep.Image, imgPath)
 			}
+			ep.Image = img // normalized; AbsURL(ep.Image) is the social-share URL, and the file is at static/<img>
 		}
 
 		if prev, ok := byNumber[ep.Number]; ok {

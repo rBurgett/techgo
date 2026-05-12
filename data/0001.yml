@@ -20,9 +20,11 @@ pubDate: 2026-05-11T12:00:00Z
 # Optional — omit to inherit site.yml's `explicit`; set true/false only to override.
 # explicit: false
 
-# Optional — path under static/ for this episode's social-share image (else the
-# site-wide og-image.png is used).
-# image: "static/episodes/0001.png"
+# Optional — this episode's social-share image. Site-relative path: the file
+# lives at static/<image> and is served from /<image> (e.g. the value below means
+# the file static/episodes/0001.png, linked as https://<baseURL>/episodes/0001.png).
+# If omitted, the site-wide og-image.png is used.
+# image: "episodes/0001.png"
 
 # Source media, relative to the project directory. `techgo media` transcodes
 # these into media/out/0001.mp3 (128 kbps CBR) and media/out/0001.mp4 (faststart).
