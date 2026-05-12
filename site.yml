@@ -1,0 +1,37 @@
+# Tech.Go — site & podcast metadata. Edit these values for your show.
+
+title: "Tech.Go"
+tagline: "A tech podcast by Isaac and his dad"
+description: "A nerdy, tech-focused podcast hosted by Isaac and his dad."
+
+author: "Isaac and his dad"          # <itunes:author>
+ownerName: "Isaac and his dad"       # <itunes:owner><itunes:name>
+ownerEmail: "ryan@burgettdev.net"    # <itunes:owner><itunes:email> (required by Apple Podcasts)
+
+# Absolute site URL — NO trailing slash. Used for every absolute URL in the
+# RSS feed, sitemap, canonical links, and Open Graph tags. Change this.
+baseURL: "https://techgo.example.com"
+
+language: "en-us"
+copyright: "© 2026 Tech.Go"
+explicit: false
+
+# Must be an exact Apple Podcasts category string; subcategory is optional.
+category: "Technology"
+subcategory: ""
+
+# "episodic" (default) or "serial".
+itunesType: "episodic"
+
+# Source PNG (relative to this project dir) for `techgo images` — generates the
+# favicon set, apple-touch-icon, og-image.png, and cover.png from it.
+coverArt: "static/logo-source.png"
+# Optional: override the cover-art URL used in the feed; otherwise baseURL + "/cover.png".
+coverArtURL: ""
+
+# Optional — sets the twitter:site meta tag, e.g. "@techgo".
+twitterHandle: ""
+
+# Optional named links (shown on the About page).
+social:
+  github: "https://github.com/rBurgett/techgo"

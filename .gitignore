@@ -27,6 +27,11 @@ go.work.sum
 # env file
 .env
 
+# techgo: build output, transcoded media, and the built binary
+public/
+media/out/
+/techgo
+
 # Editor/IDE
-# .idea/
-# .vscode/
+.idea/
+.vscode/
