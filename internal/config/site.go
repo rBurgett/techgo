@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"net/url"
 	"os"
 	"path/filepath"
@@ -37,18 +39,21 @@ type Site struct {
 // LoadSite reads and validates <projectDir>/site.yml.
 func LoadSite(projectDir string) (*Site, error) {
 	path := filepath.Join(projectDir, SiteFileName)
-	data, err := os.ReadFile(path)
+	f, err := os.Open(path)
 	if err != nil {
 		if os.IsNotExist(err) {
 			return nil, fmt.Errorf("no %s at %s", SiteFileName, path)
 		}
 		return nil, fmt.Errorf("reading %s: %w", path, err)
 	}
+	defer f.Close()
 
 	var s Site
-	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	dec := yaml.NewDecoder(f)
 	dec.KnownFields(true)
-	if err := dec.Decode(&s); err != nil {
+	// io.EOF here just means the file was empty; let validation report the
+	// missing required fields with a clear message instead of "EOF".
+	if err := dec.Decode(&s); err != nil && !errors.Is(err, io.EOF) {
 		return nil, fmt.Errorf("parsing %s: %w", path, err)
 	}
 	if err := s.normalizeAndValidate(); err != nil {
@@ -85,32 +90,45 @@ func (s *Site) normalizeAndValidate() error {
 		return fmt.Errorf("itunesType must be \"episodic\" or \"serial\", got %q", s.ItunesType)
 	}
 
-	base := strings.TrimSpace(s.BaseURL)
-	if base == "" {
+	if strings.TrimSpace(s.BaseURL) == "" {
 		return fmt.Errorf("baseURL is required")
 	}
-	u, err := url.Parse(base)
+	u, err := parseAbsHTTPURL(s.BaseURL)
 	if err != nil {
-		return fmt.Errorf("baseURL is not a valid URL: %w", err)
-	}
-	if (u.Scheme != "http" && u.Scheme != "https") || u.Host == "" {
-		return fmt.Errorf("baseURL must be an absolute http(s) URL, got %q", s.BaseURL)
-	}
-	if u.RawQuery != "" || u.Fragment != "" || u.User != nil {
-		return fmt.Errorf("baseURL must not contain a query string, fragment, or userinfo, got %q", s.BaseURL)
+		return fmt.Errorf("baseURL %v (got %q)", err, s.BaseURL)
 	}
 	// Normalize: keep scheme://host[/path] and trim a trailing slash from the path.
-	s.BaseURL = u.Scheme + "://" + u.Host + strings.TrimRight(u.Path, "/")
+	s.BaseURL = u.Scheme + "://" + u.Host + strings.TrimRight(u.EscapedPath(), "/")
 
 	if s.CoverArtURL != "" {
-		cv := strings.TrimSpace(s.CoverArtURL)
-		cu, err := url.Parse(cv)
-		if err != nil || (cu.Scheme != "http" && cu.Scheme != "https") || cu.Host == "" {
-			return fmt.Errorf("coverArtURL must be an absolute http(s) URL, got %q", s.CoverArtURL)
+		if _, err := parseAbsHTTPURL(s.CoverArtURL); err != nil {
+			return fmt.Errorf("coverArtURL %v (got %q)", err, s.CoverArtURL)
 		}
-		s.CoverArtURL = cv
+		// No path concatenation happens on coverArtURL, so store the user's exact
+		// (trimmed) value rather than a re-serialized one.
+		s.CoverArtURL = strings.TrimSpace(s.CoverArtURL)
 	}
 	return nil
+}
+
+// parseAbsHTTPURL parses raw (after trimming surrounding whitespace) and requires
+// it to be an absolute http/https URL with a host and no query string, fragment,
+// or userinfo. It returns the parsed URL.
+func parseAbsHTTPURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil {
+		return nil, fmt.Errorf("is not a valid URL: %w", err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return nil, fmt.Errorf("must use the http or https scheme")
+	}
+	if u.Host == "" {
+		return nil, fmt.Errorf("must include a host")
+	}
+	if u.RawQuery != "" || u.ForceQuery || u.Fragment != "" || u.RawFragment != "" || u.User != nil {
+		return nil, fmt.Errorf("must not contain a query string, fragment, or userinfo")
+	}
+	return u, nil
 }
 
 // AbsURL joins a site-relative path onto BaseURL, producing an absolute URL.

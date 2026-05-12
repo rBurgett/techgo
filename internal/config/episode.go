@@ -1,7 +1,9 @@
 package config
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"path"
 	"path/filepath"
@@ -116,18 +118,21 @@ func LoadEpisodes(projectDir string) ([]Episode, error) {
 	return episodes, nil
 }
 
-func loadEpisodeFile(path string) (Episode, error) {
-	data, err := os.ReadFile(path)
+func loadEpisodeFile(filePath string) (Episode, error) {
+	f, err := os.Open(filePath)
 	if err != nil {
-		return Episode{}, fmt.Errorf("reading %s: %w", path, err)
+		return Episode{}, fmt.Errorf("reading %s: %w", filePath, err)
 	}
+	defer f.Close()
 	var ep Episode
-	dec := yaml.NewDecoder(strings.NewReader(string(data)))
+	dec := yaml.NewDecoder(f)
 	dec.KnownFields(true)
-	if err := dec.Decode(&ep); err != nil {
-		return Episode{}, fmt.Errorf("parsing %s: %w", path, err)
+	// io.EOF here just means the file was empty; let validation report the
+	// missing required fields with a clear message instead of "EOF".
+	if err := dec.Decode(&ep); err != nil && !errors.Is(err, io.EOF) {
+		return Episode{}, fmt.Errorf("parsing %s: %w", filePath, err)
 	}
-	ep.SourceFile = path
+	ep.SourceFile = filePath
 	return ep, nil
 }
 
@@ -165,7 +170,10 @@ func normalizeAndValidateEpisodes(projectDir string, episodes []Episode) error {
 			}
 			imgPath := filepath.Join(projectDir, "static", filepath.FromSlash(img))
 			if _, err := os.Stat(imgPath); err != nil {
-				return fmt.Errorf("%s: image %q not found at %s", name, ep.Image, imgPath)
+				if os.IsNotExist(err) {
+					return fmt.Errorf("%s: image %q not found at %s", name, ep.Image, imgPath)
+				}
+				return fmt.Errorf("%s: image %q: %w", name, ep.Image, err)
 			}
 			ep.Image = img // normalized; AbsURL(ep.Image) is the social-share URL, and the file is at static/<img>
 		}

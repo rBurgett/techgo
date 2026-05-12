@@ -101,12 +101,23 @@ func TestLoadSite(t *testing.T) {
 	if _, err := LoadSite(dir2); err == nil {
 		t.Error("expected error for missing required fields")
 	}
-	// Bad baseURL variants and coverArtURL: each must be rejected.
+	// Empty site.yml: io.EOF is tolerated, then validation reports missing fields.
+	dEmpty := t.TempDir()
+	writeFile(t, filepath.Join(dEmpty, SiteFileName), "")
+	if _, err := LoadSite(dEmpty); err == nil {
+		t.Error("expected error for empty site.yml")
+	}
+
+	// Bad baseURL / coverArtURL variants: each must be rejected.
 	for name, body := range map[string]string{
-		"non-http baseURL":     "baseURL: \"ftp://nope\"\n",
-		"baseURL with query":   "baseURL: \"https://x.example.com/?a=1\"\n",
-		"baseURL with frag":    "baseURL: \"https://x.example.com/#top\"\n",
-		"non-http coverArtURL": "baseURL: \"https://x.example.com\"\ncoverArtURL: \"file:///tmp/cover.png\"\n",
+		"non-http baseURL":        "baseURL: \"ftp://nope\"\n",
+		"baseURL with query":      "baseURL: \"https://x.example.com/?a=1\"\n",
+		"baseURL with frag":       "baseURL: \"https://x.example.com/#top\"\n",
+		"baseURL with userinfo":   "baseURL: \"https://user:pass@x.example.com\"\n",
+		"non-http coverArtURL":    "baseURL: \"https://x.example.com\"\ncoverArtURL: \"file:///tmp/cover.png\"\n",
+		"coverArtURL with query":  "baseURL: \"https://x.example.com\"\ncoverArtURL: \"https://cdn.example.com/c.png?v=1\"\n",
+		"coverArtURL with frag":   "baseURL: \"https://x.example.com\"\ncoverArtURL: \"https://cdn.example.com/c.png#x\"\n",
+		"coverArtURL w/ userinfo": "baseURL: \"https://x.example.com\"\ncoverArtURL: \"https://u:p@cdn.example.com/c.png\"\n",
 	} {
 		d := t.TempDir()
 		writeFile(t, filepath.Join(d, SiteFileName),
