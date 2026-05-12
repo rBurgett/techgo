@@ -1,0 +1,32 @@
+:root{
+  --bg:#1a1a1a; --panel:#202020; --accent:#a04b3a; --accent-hi:#c25f4a;
+  --text:#d6d3cd; --text-dim:#8b8784; --go-grey:#7a756f; --border:#2e2e2e; --code-bg:#262320;
+  --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, "Liberation Mono", monospace;
+  --sans: system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+}
+*{box-sizing:border-box} html,body{margin:0;padding:0}
+body{background:var(--bg);color:var(--text);font-family:var(--sans);line-height:1.6;font-size:16px}
+main{max-width:760px;margin:0 auto;padding:2rem 1.25rem}
+header{border-bottom:1px solid var(--border);background:var(--panel)}
+header .wrap{max-width:760px;margin:0 auto;padding:1rem 1.25rem;display:flex;align-items:baseline;gap:1.5rem;flex-wrap:wrap}
+.wordmark{font-family:var(--mono);font-weight:700;font-size:1.4rem;letter-spacing:-.02em;text-decoration:none}
+.wordmark .t{color:var(--accent)} .wordmark .g{color:var(--go-grey)}
+nav a{color:var(--text-dim);text-decoration:none;font-family:var(--mono);font-size:.9rem;margin-right:1rem}
+nav a:hover{color:var(--text)}
+a{color:var(--accent)} a:hover{color:var(--accent-hi)}
+h1,h2,h3{font-family:var(--mono);font-weight:600;line-height:1.25}
+.episode-card{background:var(--panel);border:1px solid var(--border);border-radius:6px;padding:1.25rem 1.5rem;margin:1.5rem 0}
+.episode-card h2{margin:.25rem 0} .episode-card h2 a{text-decoration:none}
+.meta{color:var(--text-dim);font-family:var(--mono);font-size:.8rem;margin:.25rem 0 1rem}
+audio,video{width:100%;display:block;margin:.75rem 0;border-radius:4px;background:#000}
+.download{font-family:var(--mono);font-size:.85rem}
+.show-notes{margin-top:2rem} .show-notes p{margin:1rem 0}
+code,pre{font-family:var(--mono);background:var(--code-bg);padding:.1rem .35rem;border-radius:3px}
+pre{padding:1rem;overflow:auto}
+footer{border-top:1px solid var(--border);color:var(--text-dim);font-size:.8rem;text-align:center;padding:2rem 1rem;font-family:var(--mono)}
+
+/* page-specific bits used by the templates */
+.tagline{color:var(--text-dim);font-family:var(--mono);font-size:.95rem;margin:.25rem 0 1.5rem}
+.episode-card .badge{display:inline-block;font-family:var(--mono);font-size:.75rem;color:var(--accent);border:1px solid var(--border);border-radius:3px;padding:.05rem .4rem}
+.episode-nav{display:flex;gap:1rem;margin-top:3rem;padding-top:1.5rem;border-top:1px solid var(--border);font-family:var(--mono);font-size:.85rem}
+.episode-nav .next{margin-left:auto;text-align:right}
