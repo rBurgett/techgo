@@ -158,8 +158,10 @@ func runFFmpegToFile(dst string, argsBeforeDst ...string) error {
 		return fmt.Errorf("creating temp file for %s: %w", dst, err)
 	}
 	tmpPath := tmp.Name()
-	tmp.Close()              // ffmpeg -y will (re)write it
-	defer os.Remove(tmpPath) // no-op once renamed; removes a partial file on failure
+	defer os.Remove(tmpPath) // no-op once renamed; removes a leftover/partial temp file otherwise
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("preparing temp file %s: %w", tmpPath, err)
+	}
 
 	if err := runFFmpeg(append(argsBeforeDst, tmpPath)...); err != nil {
 		return err

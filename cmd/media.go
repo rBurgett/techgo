@@ -172,11 +172,15 @@ func printMediaSummary(w io.Writer, outDir string, episodes []config.Episode) {
 }
 
 // fileSizeAndDuration returns a human-readable size and an H:MM:SS duration for
-// a transcoded media file, using placeholders if it is missing or unprobable.
+// a transcoded media file, using placeholders when it is missing, unreadable,
+// or its duration can't be probed.
 func fileSizeAndDuration(path string) (size, duration string) {
 	fi, err := os.Stat(path)
 	if err != nil {
-		return "(missing)", "—"
+		if os.IsNotExist(err) {
+			return "(missing)", "—"
+		}
+		return "(error)", "—"
 	}
 	size = humanBytes(fi.Size())
 	secs, err := media.ProbeDurationSeconds(path)
