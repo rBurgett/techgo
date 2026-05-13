@@ -69,13 +69,16 @@ func siteHandler(dir string) http.Handler {
 		if !rec.notFound {
 			return
 		}
-		w.Header().Set("Content-Type", "text/html; charset=utf-8")
-		w.WriteHeader(http.StatusNotFound)
-		if body, err := os.ReadFile(filepath.Join(dir, "404.html")); err == nil {
-			_, _ = w.Write(body)
+		body, err := os.ReadFile(filepath.Join(dir, "404.html"))
+		if err != nil { // build is incomplete — still answer with a plain 404
+			w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+			w.WriteHeader(http.StatusNotFound)
+			_, _ = io.WriteString(w, "404 — not found\n")
 			return
 		}
-		_, _ = io.WriteString(w, "404 — not found\n")
+		w.Header().Set("Content-Type", "text/html; charset=utf-8")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write(body)
 	})
 }
 

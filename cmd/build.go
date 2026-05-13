@@ -156,9 +156,10 @@ func runBuild(cmd *cobra.Command, _ []string) error {
 }
 
 // validateOutputDir rejects an --output path that would be dangerous to
-// os.RemoveAll: empty/relative, the filesystem root, the user's home directory,
-// the project directory itself or one of its ancestors, or anything fewer than
-// two path components deep (so a top-level dir like "/var" can't be wiped).
+// os.RemoveAll: empty/relative, a filesystem/volume root, the user's home
+// directory, the project directory itself or one of its ancestors, or anything
+// fewer than two path components deep (so a top-level dir like "/var" can't be
+// wiped).
 func validateOutputDir(outputDir, projectDir string) error {
 	clean := filepath.Clean(outputDir)
 	if clean == "" || clean == "." {
@@ -168,7 +169,10 @@ func validateOutputDir(outputDir, projectDir string) error {
 		return fmt.Errorf("build output directory must be an absolute path, got %q", outputDir)
 	}
 	sep := string(filepath.Separator)
-	if clean == sep {
+	// "/" on Unix, plus a Windows drive root ("C:\") or UNC share root
+	// ("\\server\share[\]"); filepath.VolumeName is "" on Unix, so this is just
+	// the "/" check there.
+	if vol := filepath.VolumeName(clean); clean == sep || clean == vol || clean == vol+sep {
 		return fmt.Errorf("refusing to use the filesystem root %q as the build output directory", clean)
 	}
 	if home, err := os.UserHomeDir(); err == nil && home != "" && clean == filepath.Clean(home) {

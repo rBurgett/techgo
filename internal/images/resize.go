@@ -34,8 +34,12 @@ func LoadPNG(path string) (image.Image, error) {
 
 // ResizeSquare center-crops src to its largest centered square and scales that
 // to size×size using Catmull-Rom resampling, returning a fresh RGBA image. Used
-// for the square podcast cover art and the favicon/app-icon set.
+// for the square podcast cover art and the favicon/app-icon set. A size below 1
+// is clamped to 1 so the result is always a valid, non-empty image.
 func ResizeSquare(src image.Image, size int) *image.RGBA {
+	if size < 1 {
+		size = 1
+	}
 	sq := centerCropSquare(src)
 	dst := image.NewRGBA(image.Rect(0, 0, size, size))
 	xdraw.CatmullRom.Scale(dst, dst.Bounds(), sq, sq.Bounds(), xdraw.Over, nil)
