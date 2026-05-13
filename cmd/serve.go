@@ -51,11 +51,29 @@ func runServe(cmd *cobra.Command, _ []string) error {
 	if err != nil {
 		return fmt.Errorf("listening on %s: %w", serveAddr, err)
 	}
-	port := ln.Addr().(*net.TCPAddr).Port
 
 	w := cmd.OutOrStdout()
-	fmt.Fprintf(w, "serving %s at http://localhost:%d/  (Ctrl+C to stop)\n", outputDir, port)
+	fmt.Fprintf(w, "serving %s at %s  (Ctrl+C to stop)\n", outputDir, listenURL(ln.Addr()))
 	return http.Serve(ln, siteHandler(outputDir))
+}
+
+// listenURL turns a listener's resolved address into the URL to open in a
+// browser: an explicitly bound interface is shown as-is, while a wildcard bind
+// (":8080", "0.0.0.0:…", "[::]:…") — which includes the loopback — is shown as
+// localhost so the printed link is always reachable.
+func listenURL(addr net.Addr) string {
+	ta, ok := addr.(*net.TCPAddr)
+	if !ok {
+		return "http://" + addr.String() + "/"
+	}
+	host := "localhost"
+	if len(ta.IP) > 0 && !ta.IP.IsUnspecified() {
+		host = ta.IP.String()
+		if ta.IP.To4() == nil {
+			host = "[" + host + "]" // bracket IPv6 literals
+		}
+	}
+	return fmt.Sprintf("http://%s:%d/", host, ta.Port)
 }
 
 // siteHandler serves the built site from dir as http.FileServer would, but
