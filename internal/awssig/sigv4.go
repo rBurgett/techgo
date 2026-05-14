@@ -311,6 +311,15 @@ func canonicalHeaders(req *http.Request) (canonical, signed string) {
 	return cb.String(), sb.String()
 }
 
+// URIEscape percent-encodes s using AWS SigV4 rules for a URI component:
+// unreserved characters pass through, every other byte (including '/', '+',
+// and other RFC-3986 reserved characters) becomes %XX with uppercase hex.
+// Exported so callers that build URLs / query strings to be signed by
+// SignRequest can use the *same* encoding the signer will canonicalize from
+// — url.QueryEscape encodes spaces as '+' (form-encoding), which the AWS
+// servers interpret as a literal '+', not a space.
+func URIEscape(s string) string { return uriEncode(s, true) }
+
 // uriEncode percent-encodes s per AWS SigV4 rules: unreserved characters
 // (A-Z, a-z, 0-9, '-', '.', '_', '~') pass through unchanged; '/' passes
 // through unchanged when encodeSlash is false (path segments); every other
