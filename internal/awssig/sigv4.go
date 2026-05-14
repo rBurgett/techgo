@@ -18,9 +18,9 @@
 //     reserved characters, that assumption needs revisiting.
 //
 // The package is intentionally small (one type, one exported function, a
-// handful of helpers) and exhaustively unit-tested against the published AWS
-// SigV4 test vector plus targeted regression tests for each canonicalization
-// step.
+// handful of helpers) and exhaustively unit-tested against two published AWS
+// SigV4 test vectors — get-vanilla and the IAM ListUsers tutorial — plus
+// targeted regression tests for each canonicalization step.
 package awssig
 
 import (
@@ -77,6 +77,11 @@ func SignRequest(req *http.Request, body []byte, service, region string, creds C
 	if req.Host == "" && req.URL.Host == "" {
 		return fmt.Errorf("awssig: request has no Host (set req.Host or req.URL.Host)")
 	}
+	// http.NewRequest always initializes Header, but a bare-handed *http.Request
+	// might not; .Set on a nil http.Header would panic, so make the empty map.
+	if req.Header == nil {
+		req.Header = make(http.Header)
+	}
 
 	amzDate := now.UTC().Format("20060102T150405Z")
 	dateStamp := now.UTC().Format("20060102")
@@ -98,7 +103,7 @@ func SignRequest(req *http.Request, body []byte, service, region string, creds C
 	}
 
 	canonicalURI := canonicalPath(req.URL.Path)
-	canonicalQuery := canonicalQueryString(req.URL.Query())
+	canonicalQuery := canonicalQueryString(req.URL.RawQuery)
 	canonicalHeadersStr, signedHeaders := canonicalHeaders(req)
 
 	canonicalRequest := strings.Join([]string{
@@ -149,20 +154,38 @@ func canonicalPath(p string) string {
 }
 
 // canonicalQueryString returns the canonical sorted, percent-encoded query
-// string per SigV4: pairs of <encoded-key>=<encoded-value> joined by '&',
-// sorted by encoded key, ties broken by encoded value (so multi-value keys are
-// also deterministic). Returns "" when v is empty.
-func canonicalQueryString(v url.Values) string {
-	if len(v) == 0 {
+// string per SigV4: <encoded-key>=<encoded-value> pairs joined by '&', sorted
+// by encoded key, ties broken by encoded value (so multi-value keys are also
+// deterministic). Returns "" when rawQuery is empty.
+//
+// We parse rawQuery ourselves with PathUnescape (NOT url.URL.Query, which uses
+// form-decoding and turns '+' into space). AWS SigV4 expects strict
+// percent-decoding of the query — a literal '+' in a key or value is preserved
+// (re-encoded as %2B), not silently converted to space. Empty segments and a
+// missing '=' are tolerated the same way the AWS SDKs handle them.
+func canonicalQueryString(rawQuery string) string {
+	if rawQuery == "" {
 		return ""
 	}
 	type kv struct{ k, v string }
-	pairs := make([]kv, 0, len(v))
-	for key, vs := range v {
-		ek := uriEncode(key, true)
-		for _, val := range vs {
-			pairs = append(pairs, kv{ek, uriEncode(val, true)})
+	var pairs []kv
+	for _, pair := range strings.Split(rawQuery, "&") {
+		if pair == "" {
+			continue
 		}
+		rawK, rawV, _ := strings.Cut(pair, "=")
+		decK, err := url.PathUnescape(rawK)
+		if err != nil {
+			decK = rawK
+		}
+		decV, err := url.PathUnescape(rawV)
+		if err != nil {
+			decV = rawV
+		}
+		pairs = append(pairs, kv{uriEncode(decK, true), uriEncode(decV, true)})
+	}
+	if len(pairs) == 0 {
+		return ""
 	}
 	sort.Slice(pairs, func(i, j int) bool {
 		if pairs[i].k != pairs[j].k {
@@ -190,16 +213,35 @@ func canonicalQueryString(v url.Values) string {
 // matched case-insensitively (mixed-cased x-amz-* set by a future caller
 // would still be picked up). Header values are trimmed and have internal
 // whitespace runs collapsed to a single space, per the SigV4 spec.
+//
+// The source-name iteration is sorted before map insertion so that two
+// different casings of the same logical header (only reachable via direct
+// map access, since Set/Add canonicalize) merge in deterministic order —
+// otherwise map-iteration randomness would make the signature vary across
+// runs for the same request.
 func canonicalHeaders(req *http.Request) (canonical, signed string) {
 	host := req.Host
 	if host == "" {
 		host = req.URL.Host
 	}
+
+	srcNames := make([]string, 0, len(req.Header))
+	for n := range req.Header {
+		srcNames = append(srcNames, n)
+	}
+	sort.Strings(srcNames)
+
 	headers := map[string]string{"host": host}
-	for name, values := range req.Header {
+	for _, name := range srcNames {
 		lname := strings.ToLower(name)
-		if lname == "content-type" || strings.HasPrefix(lname, "x-amz-") {
-			headers[lname] = strings.Join(values, ",")
+		if lname != "content-type" && !strings.HasPrefix(lname, "x-amz-") {
+			continue
+		}
+		joined := strings.Join(req.Header[name], ",")
+		if existing, ok := headers[lname]; ok {
+			headers[lname] = existing + "," + joined
+		} else {
+			headers[lname] = joined
 		}
 	}
 	for k, v := range headers {
@@ -207,14 +249,15 @@ func canonicalHeaders(req *http.Request) (canonical, signed string) {
 		// internal whitespace runs (spaces, tabs, newlines) into single spaces.
 		headers[k] = strings.Join(strings.Fields(v), " ")
 	}
-	names := make([]string, 0, len(headers))
+
+	outNames := make([]string, 0, len(headers))
 	for k := range headers {
-		names = append(names, k)
+		outNames = append(outNames, k)
 	}
-	sort.Strings(names)
+	sort.Strings(outNames)
 
 	var cb, sb strings.Builder
-	for i, n := range names {
+	for i, n := range outNames {
 		cb.WriteString(n)
 		cb.WriteByte(':')
 		cb.WriteString(headers[n])

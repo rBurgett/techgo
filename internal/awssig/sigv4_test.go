@@ -1,6 +1,7 @@
 package awssig
 
 import (
+	"bytes"
 	"crypto/sha256"
 	"encoding/hex"
 	"net/http"
@@ -93,7 +94,7 @@ func TestSignRequestIAMListUsers(t *testing.T) {
 func TestSignRequestS3PutSetsContentSha256(t *testing.T) {
 	body := []byte(`{"hello":"world"}`)
 	req, err := http.NewRequest(http.MethodPut,
-		"https://bucket.s3.us-east-1.amazonaws.com/key.json", strings.NewReader(string(body)))
+		"https://bucket.s3.us-east-1.amazonaws.com/key.json", bytes.NewReader(body))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -170,6 +171,78 @@ func TestSignRequestRejectsRequestWithoutHost(t *testing.T) {
 	}
 }
 
+// TestSignRequestInitializesNilHeader makes sure a bare-handed *http.Request
+// with a nil Header doesn't panic in Set — http.NewRequest always allocates
+// the map, but callers who build a Request value directly may not.
+func TestSignRequestInitializesNilHeader(t *testing.T) {
+	req := &http.Request{
+		Method: http.MethodGet,
+		URL:    &url.URL{Scheme: "https", Host: "example.amazonaws.com", Path: "/"},
+		Host:   "example.amazonaws.com",
+		// Header intentionally nil.
+	}
+	if err := SignRequest(req, nil, "service", "us-east-1", testCreds, testTime); err != nil {
+		t.Fatalf("SignRequest: %v", err)
+	}
+	if req.Header == nil {
+		t.Fatal("Header still nil after SignRequest")
+	}
+	if got := req.Header.Get("Authorization"); got == "" {
+		t.Error("Authorization header missing")
+	}
+}
+
+// TestSignRequestStrictQueryEncoding flows the '+' fix end-to-end through
+// SignRequest: a literal '+' in RawQuery must round-trip as %2B in the
+// canonical query (and therefore produce a stable, server-matchable signature).
+func TestSignRequestStrictQueryEncoding(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet,
+		"https://example.amazonaws.com/?key=hello+world", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Host = "example.amazonaws.com"
+	if err := SignRequest(req, nil, "service", "us-east-1", testCreds, testTime); err != nil {
+		t.Fatalf("SignRequest: %v", err)
+	}
+	// Re-derive the signature from the canonical request we expect — proves
+	// the '+' was encoded as %2B (not silently swapped for space).
+	if got := canonicalQueryString(req.URL.RawQuery); got != "key=hello%2Bworld" {
+		t.Errorf("canonical query = %q, want key=hello%%2Bworld", got)
+	}
+}
+
+// TestCanonicalHeadersMergesDuplicateCasingsDeterministically catches the
+// (rare) case where req.Header contains two casings of the same logical
+// header — only reachable via direct map access, since Set/Add canonicalize.
+// Map iteration is randomized, so without sorting source names first the
+// merged value would vary between runs and the signature with it.
+func TestCanonicalHeadersMergesDuplicateCasingsDeterministically(t *testing.T) {
+	req, err := http.NewRequest(http.MethodGet, "https://example.com/", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Direct map writes bypass Header.Set's canonicalization, so we end up
+	// with two map keys for one logical header.
+	req.Header["X-Amz-Foo"] = []string{"upper"}
+	req.Header["x-amz-foo"] = []string{"lower"}
+
+	canon, _ := canonicalHeaders(req)
+	// sort.Strings puts "X-Amz-Foo" before "x-amz-foo" (uppercase 'X' < 'x'),
+	// so the merged value is "upper,lower".
+	if !strings.Contains(canon, "x-amz-foo:upper,lower\n") {
+		t.Errorf("expected deterministic merge 'upper,lower' for x-amz-foo, got:\n%s", canon)
+	}
+	// Run the canonicalization several times: the result must be byte-stable
+	// across map iteration randomness.
+	for i := 0; i < 50; i++ {
+		again, _ := canonicalHeaders(req)
+		if again != canon {
+			t.Fatalf("canonicalHeaders not deterministic across runs:\n first: %q\nsecond: %q", canon, again)
+		}
+	}
+}
+
 func TestUriEncode(t *testing.T) {
 	cases := []struct {
 		in          string
@@ -207,19 +280,28 @@ func TestCanonicalQueryString(t *testing.T) {
 	}{
 		{"", ""},
 		{"a=1", "a=1"},
-		{"b=2&a=1", "a=1&b=2"},                 // keys sorted
-		{"foo=bar baz", "foo=bar%20baz"},       // value encoded
-		{"a=1&a=2", "a=1&a=2"},                 // multi-value, already sorted
-		{"a=2&a=1", "a=1&a=2"},                 // multi-value, re-sorted
-		{"key/path=value", "key%2Fpath=value"}, // '/' in key encoded
+		{"b=2&a=1", "a=1&b=2"},                   // keys sorted
+		{"foo=bar%20baz", "foo=bar%20baz"},       // %20 round-trips
+		{"a=1&a=2", "a=1&a=2"},                   // multi-value, already sorted
+		{"a=2&a=1", "a=1&a=2"},                   // multi-value, re-sorted
+		{"key%2Fpath=value", "key%2Fpath=value"}, // %2F in key round-trips
 		{"prefix=foo&list-type=2", "list-type=2&prefix=foo"}, // S3 list-objects-v2 style
+		// A literal '+' in the raw query is NOT space — SigV4 expects strict
+		// percent-decoding, so we re-encode '+' as %2B. The previous
+		// implementation went through url.URL.Query(), which would silently
+		// turn '+' into a space (form-encoding semantics) and produce the
+		// wrong canonical request.
+		{"a=hello+world", "a=hello%2Bworld"},
+		{"a=hello%20world", "a=hello%20world"},
+		// Bare key (no '=') canonicalizes as "key=", matching aws-sdk-go-v2.
+		{"flag", "flag="},
+		// Empty segments are ignored.
+		{"a=1&&b=2", "a=1&b=2"},
+		{"&a=1", "a=1"},
+		{"a=1&", "a=1"},
 	}
 	for _, c := range cases {
-		v, err := url.ParseQuery(c.in)
-		if err != nil {
-			t.Fatalf("ParseQuery(%q): %v", c.in, err)
-		}
-		got := canonicalQueryString(v)
+		got := canonicalQueryString(c.in)
 		if got != c.want {
 			t.Errorf("canonicalQueryString(%q) = %q, want %q", c.in, got, c.want)
 		}
