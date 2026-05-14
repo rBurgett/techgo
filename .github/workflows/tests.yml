@@ -1,0 +1,57 @@
+name: tests
+
+on:
+  pull_request:
+
+# Default to least-privilege; this workflow only needs to read the repo.
+permissions:
+  contents: read
+
+# Cancel superseded runs on the same branch to save CI minutes.
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Go tests
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      # Use the Go toolchain installed by setup-go; refuse to silently
+      # download a different one at build time.
+      GOTOOLCHAIN: local
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          # Don't leave the GITHUB_TOKEN on disk for later steps to reuse.
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          check-latest: false
+
+      - name: Verify module checksums
+        run: go mod verify
+
+      - name: Verify gofmt
+        run: |
+          set -euo pipefail
+          unformatted=$(gofmt -l .)
+          if [ -n "$unformatted" ]; then
+            echo "::error::The following files are not gofmt-clean:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: go vet
+        run: go vet ./...
+
+      - name: go build
+        run: go build ./...
+
+      - name: go test
+        run: go test ./...
