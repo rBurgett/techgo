@@ -156,6 +156,16 @@ func TestSignRequestSessionToken(t *testing.T) {
 	}
 }
 
+// TestSignRequestRejectsNilRequest verifies SignRequest returns a descriptive
+// error instead of nil-pointer-panicking when called with a nil *http.Request.
+// The function already returns errors for other invalid state (nil URL, no
+// Host); rejecting nil keeps the error contract consistent.
+func TestSignRequestRejectsNilRequest(t *testing.T) {
+	if err := SignRequest(nil, nil, "s3", "us-east-1", testCreds, testTime); err == nil {
+		t.Error("SignRequest(nil, ...): nil error, want a rejection")
+	}
+}
+
 // TestSignRequestRejectsRequestWithoutHost guards against accidentally signing
 // a request that won't have a Host when it ships, which would produce a valid-
 // looking but server-rejected signature (since the server canonicalizes its
@@ -352,9 +362,11 @@ func TestCanonicalHeadersMatchesCaseInsensitively(t *testing.T) {
 	}
 }
 
-// TestCanonicalPath verifies path encoding preserves '/' between segments and
-// percent-encodes everything else per AWS rules. The empty path canonicalizes
-// to "/" so the canonical request is never missing the path field.
+// TestCanonicalPath verifies path encoding preserves '/' between segments,
+// passes through valid percent-encoded sequences (preserving %2F so a literal
+// slash inside a key is signed as the wire bytes, not folded back to a
+// segment separator), normalizes hex to uppercase, and AWS-encodes any
+// remaining literal bytes. The empty path canonicalizes to "/".
 func TestCanonicalPath(t *testing.T) {
 	cases := []struct{ in, want string }{
 		{"", "/"},
@@ -363,10 +375,55 @@ func TestCanonicalPath(t *testing.T) {
 		{"/foo/bar", "/foo/bar"},
 		{"/My Object", "/My%20Object"},
 		{"/path/with/é", "/path/with/%C3%A9"},
+		// Pre-escaped input (what URL.EscapedPath returns):
+		{"/foo%2Fbar", "/foo%2Fbar"},               // %2F preserved (slash in key)
+		{"/foo%2fbar", "/foo%2Fbar"},               // hex normalized to uppercase
+		{"/path/with/%C3%A9", "/path/with/%C3%A9"}, // pre-escaped UTF-8 preserved
+		{"/foo%25bar", "/foo%25bar"},               // %25 (literal %) preserved
+		{"/foo%2", "/foo%252"},                     // incomplete %XX: lone % gets encoded
 	}
 	for _, c := range cases {
 		if got := canonicalPath(c.in); got != c.want {
 			t.Errorf("canonicalPath(%q) = %q, want %q", c.in, got, c.want)
 		}
+	}
+}
+
+// TestSignRequestEscapedPathDiffersFromDecoded is the end-to-end regression
+// test for the EscapedPath fix: two URLs differing only in '%2F' vs '/'
+// (a literal slash in a key vs. a segment separator) MUST sign differently,
+// because the wire bytes differ. If SignRequest were still using URL.Path,
+// both signatures would be identical and one of them would fail at AWS.
+func TestSignRequestEscapedPathDiffersFromDecoded(t *testing.T) {
+	withEscape, err := http.NewRequest(http.MethodGet,
+		"https://example.amazonaws.com/foo%2Fbar", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withEscape.Host = "example.amazonaws.com"
+
+	withSlash, err := http.NewRequest(http.MethodGet,
+		"https://example.amazonaws.com/foo/bar", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	withSlash.Host = "example.amazonaws.com"
+
+	// Sanity-check Go's URL parsing: %2F preserved in RawPath, decoded in Path.
+	if withEscape.URL.Path != "/foo/bar" || withEscape.URL.RawPath != "/foo%2Fbar" {
+		t.Fatalf("URL parsing changed: Path=%q RawPath=%q", withEscape.URL.Path, withEscape.URL.RawPath)
+	}
+
+	if err := SignRequest(withEscape, nil, "s3", "us-east-1", testCreds, testTime); err != nil {
+		t.Fatal(err)
+	}
+	if err := SignRequest(withSlash, nil, "s3", "us-east-1", testCreds, testTime); err != nil {
+		t.Fatal(err)
+	}
+
+	a1 := withEscape.Header.Get("Authorization")
+	a2 := withSlash.Header.Get("Authorization")
+	if a1 == a2 {
+		t.Errorf("expected different signatures for /foo%%2Fbar vs /foo/bar (different wire bytes); got identical:\n%s", a1)
 	}
 }

@@ -42,6 +42,9 @@ const (
 	// request with no body, so we don't pay the cost of hashing nothing every
 	// call (and so callers can pass a nil body without surprises).
 	emptyPayloadHash = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+	// upperHex is the alphabet AWS canonicalization uses for percent-encoding
+	// (uppercase). Shared by uriEncode and canonicalPath.
+	upperHex = "0123456789ABCDEF"
 )
 
 // Credentials is the static-credentials triple. SessionToken is empty for
@@ -71,6 +74,9 @@ type Credentials struct {
 // CloudFront API regardless of where the distribution lives. now is the
 // signing time, injected so tests are deterministic.
 func SignRequest(req *http.Request, body []byte, service, region string, creds Credentials, now time.Time) error {
+	if req == nil {
+		return fmt.Errorf("awssig: request is nil")
+	}
 	if req.URL == nil {
 		return fmt.Errorf("awssig: request URL is nil")
 	}
@@ -102,7 +108,12 @@ func SignRequest(req *http.Request, body []byte, service, region string, creds C
 		req.Header.Set("X-Amz-Security-Token", creds.SessionToken)
 	}
 
-	canonicalURI := canonicalPath(req.URL.Path)
+	// EscapedPath, not Path: net/http sends the escaped form on the wire, and
+	// AWS canonicalizes from the bytes it receives. Signing the *decoded* path
+	// would silently fold '%2F' (a literal slash inside a key) into '/' (a
+	// segment separator), producing a signature over different bytes than the
+	// server computes and a SignatureDoesNotMatch failure.
+	canonicalURI := canonicalPath(req.URL.EscapedPath())
 	canonicalQuery := canonicalQueryString(req.URL.RawQuery)
 	canonicalHeadersStr, signedHeaders := canonicalHeaders(req)
 
@@ -144,13 +155,43 @@ func hmacSHA256(key, data []byte) []byte {
 	return h.Sum(nil)
 }
 
-// canonicalPath URI-encodes the path component per AWS rules, preserving
-// forward slashes between segments. An empty path canonicalizes to "/".
-func canonicalPath(p string) string {
-	if p == "" {
+// canonicalPath turns a URL's *escaped* path (URL.EscapedPath(), not Path)
+// into the SigV4 canonical URI. Valid percent-encoded sequences (%XX with two
+// hex digits) pass through with their hex digits normalized to uppercase — the
+// AWS canonical form. Any remaining literal byte is AWS-encoded if it isn't in
+// the unreserved set; '/' is always preserved as a segment separator (a slash
+// embedded in a key is already %2F in the input). An empty path becomes "/".
+//
+// Working from the escaped form is what makes a key containing a literal '/'
+// sign correctly: URL.Path = "/foo/bar", URL.RawPath = "/foo%2Fbar". Signing
+// Path would sign different bytes than net/http sends; signing
+// EscapedPath() ("/foo%2Fbar") matches the wire.
+func canonicalPath(escapedPath string) string {
+	if escapedPath == "" {
 		return "/"
 	}
-	return uriEncode(p, false)
+	var b strings.Builder
+	b.Grow(len(escapedPath))
+	for i := 0; i < len(escapedPath); {
+		c := escapedPath[i]
+		if c == '%' && i+2 < len(escapedPath) && isHexDigit(escapedPath[i+1]) && isHexDigit(escapedPath[i+2]) {
+			b.WriteByte('%')
+			b.WriteByte(toUpperHex(escapedPath[i+1]))
+			b.WriteByte(toUpperHex(escapedPath[i+2]))
+			i += 3
+			continue
+		}
+		switch {
+		case isUnreserved(c), c == '/':
+			b.WriteByte(c)
+		default:
+			b.WriteByte('%')
+			b.WriteByte(upperHex[c>>4])
+			b.WriteByte(upperHex[c&0xf])
+		}
+		i++
+	}
+	return b.String()
 }
 
 // canonicalQueryString returns the canonical sorted, percent-encoded query
@@ -277,7 +318,6 @@ func canonicalHeaders(req *http.Request) (canonical, signed string) {
 // multi-byte UTF-8 runes are encoded as their constituent bytes, matching
 // AWS's spec.
 func uriEncode(s string, encodeSlash bool) string {
-	const upperHex = "0123456789ABCDEF"
 	// Fast path: nothing to encode. Slightly speeds up the common case (paths
 	// that are pure ASCII without reserved characters) and avoids one alloc.
 	clean := true
@@ -318,4 +358,15 @@ func isUnreserved(c byte) bool {
 		return true
 	}
 	return false
+}
+
+func isHexDigit(c byte) bool {
+	return ('0' <= c && c <= '9') || ('a' <= c && c <= 'f') || ('A' <= c && c <= 'F')
+}
+
+func toUpperHex(c byte) byte {
+	if 'a' <= c && c <= 'f' {
+		return c - ('a' - 'A')
+	}
+	return c
 }
