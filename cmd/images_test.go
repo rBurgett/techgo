@@ -12,7 +12,7 @@ import (
 )
 
 func TestParseHexColor(t *testing.T) {
-	good := map[string]color.RGBA{
+	good := map[string]color.NRGBA{
 		"#000000":   {0, 0, 0, 255},
 		"#1a1a1a":   {26, 26, 26, 255},
 		"#FFFFFF":   {255, 255, 255, 255},
@@ -33,6 +33,23 @@ func TestParseHexColor(t *testing.T) {
 		if _, err := parseHexColor(bad); err == nil {
 			t.Errorf("parseHexColor(%q) = nil error, want a rejection", bad)
 		}
+	}
+
+	// CSS hex alpha is non-premultiplied: #80808080 is "50%-transparent mid-
+	// gray", which must premultiply when the draw routines call .RGBA() —
+	// (0x8080 * 0x80 / 0xff) == 0x4080 per RGB channel. Returning a color.RGBA
+	// (premultiplied) would skip that step and produce 0x8080, silently
+	// rendering "50%-transparent white". This is the regression we just fixed.
+	c, err := parseHexColor("#80808080")
+	if err != nil {
+		t.Fatalf("parseHexColor(#80808080): %v", err)
+	}
+	r, g, b, a := c.RGBA()
+	if r != 0x4080 || g != 0x4080 || b != 0x4080 {
+		t.Errorf("RGB premultiplied = (0x%04x, 0x%04x, 0x%04x), want all 0x4080", r, g, b)
+	}
+	if a != 0x8080 {
+		t.Errorf("alpha = 0x%04x, want 0x8080", a)
 	}
 }
 

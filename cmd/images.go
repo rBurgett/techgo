@@ -180,8 +180,12 @@ func savePNGAt(src image.Image, size int, path string) func() error {
 	}
 }
 
-// parseHexColor parses #RRGGBB or #RRGGBBAA into a color.RGBA. A missing alpha
-// defaults to fully opaque. The leading '#' is required (CSS convention).
+// parseHexColor parses CSS-style #RRGGBB or #RRGGBBAA into a color.NRGBA — the
+// *non*-alpha-premultiplied variant, matching the CSS interpretation of the
+// hex digits. (Returning color.RGBA would silently corrupt any value with
+// alpha < 0xFF, since color.RGBA is contractually premultiplied; the draw
+// routines call .RGBA() which premultiplies NRGBA correctly.) A missing alpha
+// defaults to fully opaque. The leading '#' is required.
 func parseHexColor(s string) (color.Color, error) {
 	raw := s
 	if !strings.HasPrefix(s, "#") {
@@ -213,5 +217,5 @@ func parseHexColor(s string) (color.Color, error) {
 			return nil, fmt.Errorf("invalid color %q: %w", raw, err)
 		}
 	}
-	return color.RGBA{R: r, G: g, B: b, A: a}, nil
+	return color.NRGBA{R: r, G: g, B: b, A: a}, nil
 }
