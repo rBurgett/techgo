@@ -212,7 +212,11 @@ func checkOutputShape(clean, original string) error {
 	if home, err := os.UserHomeDir(); err == nil && home != "" && clean == filepath.Clean(home) {
 		return fmt.Errorf("refusing to use the home directory %q as the build output directory", clean)
 	}
-	if len(strings.Split(strings.Trim(clean, sep), sep)) < 2 {
+	// Strip any Windows volume name / UNC share before counting components, so
+	// "C:\var" is rejected for the same reason "/var" is (len("var") components
+	// == 1). VolumeName is "" on Unix, so this is the lexical depth check there.
+	rest := strings.TrimPrefix(clean, filepath.VolumeName(clean))
+	if len(strings.Split(strings.Trim(rest, sep), sep)) < 2 {
 		return fmt.Errorf("refusing to use %q as the build output directory: too close to the filesystem root", clean)
 	}
 	return nil
