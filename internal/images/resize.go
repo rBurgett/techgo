@@ -14,6 +14,8 @@ import (
 	"image"
 	"image/png"
 	"os"
+	"path/filepath"
+	"strings"
 
 	xdraw "golang.org/x/image/draw"
 )
@@ -47,18 +49,35 @@ func ResizeSquare(src image.Image, size int) *image.RGBA {
 }
 
 // SavePNG writes img to path as a PNG with maximum compression and no ancillary
-// metadata chunks.
+// metadata chunks. The write is atomic: the encoded bytes go to a sibling temp
+// file first and are renamed into place only on success, so a failed encode
+// (out of disk, panic, signal) never leaves a partial/corrupt PNG at path. That
+// matters because `techgo build` skips regenerating an existing public/cover.png,
+// so a half-written one would otherwise persist across subsequent builds.
 func SavePNG(img image.Image, path string) error {
-	f, err := os.Create(path)
+	dir := filepath.Dir(path)
+	base := filepath.Base(path)
+	ext := filepath.Ext(base)
+	tmp, err := os.CreateTemp(dir, "."+strings.TrimSuffix(base, ext)+".tmp-*"+ext)
 	if err != nil {
-		return err
+		return fmt.Errorf("creating temp file for %s: %w", path, err)
 	}
+	tmpPath := tmp.Name()
+	defer os.Remove(tmpPath) // no-op once renamed; removes a leftover/partial file otherwise
 	enc := png.Encoder{CompressionLevel: png.BestCompression}
-	if err := enc.Encode(f, img); err != nil {
-		f.Close()
+	if err := enc.Encode(tmp, img); err != nil {
+		tmp.Close()
 		return fmt.Errorf("encoding %s as PNG: %w", path, err)
 	}
-	return f.Close()
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("closing temp file for %s: %w", path, err)
+	}
+	// os.CreateTemp creates the file 0600; match a normal output (best effort).
+	_ = os.Chmod(tmpPath, 0o644)
+	if err := os.Rename(tmpPath, path); err != nil {
+		return fmt.Errorf("finalizing %s: %w", path, err)
+	}
+	return nil
 }
 
 // centerCropSquare returns the largest centered square region of src. When src

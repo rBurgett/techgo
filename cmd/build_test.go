@@ -40,6 +40,31 @@ func TestValidateOutputDir(t *testing.T) {
 	}
 }
 
+// TestValidateOutputDirSymlink verifies the guards also reject paths whose
+// symlink-resolved form is unsafe (project dir, home dir) — os.RemoveAll
+// follows symlinks in path components, so a lexical-only check isn't enough.
+func TestValidateOutputDirSymlink(t *testing.T) {
+	proj := t.TempDir()
+	linksDir := t.TempDir()
+
+	toProject := filepath.Join(linksDir, "to-project")
+	if err := os.Symlink(proj, toProject); err != nil {
+		t.Skipf("symlinks not supported here: %v", err)
+	}
+	if err := validateOutputDir(toProject, proj); err == nil {
+		t.Error("validateOutputDir(symlink-to-project, project) = nil, want an error")
+	}
+
+	if home, err := os.UserHomeDir(); err == nil && home != "" {
+		toHome := filepath.Join(linksDir, "to-home")
+		if err := os.Symlink(home, toHome); err == nil {
+			if err := validateOutputDir(toHome, proj); err == nil {
+				t.Error("validateOutputDir(symlink-to-home, project) = nil, want an error")
+			}
+		}
+	}
+}
+
 // TestBuildCommand runs the whole `techgo build` against a throwaway project
 // with tiny ffmpeg-generated source media, then checks the output tree, the
 // regenerated robots.txt, an episode page, the feed (well-formed, with the real

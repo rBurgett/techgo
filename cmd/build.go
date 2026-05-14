@@ -159,14 +159,48 @@ func runBuild(cmd *cobra.Command, _ []string) error {
 // os.RemoveAll: empty/relative, a filesystem/volume root, the user's home
 // directory, the project directory itself or one of its ancestors, or anything
 // fewer than two path components deep (so a top-level dir like "/var" can't be
-// wiped).
+// wiped). Because os.RemoveAll follows symlinks in path components, the guards
+// also run against the symlink-resolved form of both the output and project
+// paths — so --output /tmp/link where /tmp/link points AT the project dir or
+// the user's home is caught, not just the lexical match. A symlink that
+// resolves to a *subdir* of home/project (e.g. $HOME/build, <project>/public)
+// is intentionally allowed: that's the same shape as the default --output, and
+// the .techgo-output marker is the line of defense for those.
 func validateOutputDir(outputDir, projectDir string) error {
 	clean := filepath.Clean(outputDir)
+	real := resolveDeepest(clean)
+	realProject := resolveDeepest(projectDir)
+	// Path-shape checks (root, home, depth, abs) — run on both forms when they
+	// differ, so a symlink can't smuggle the resolved target past them.
+	for _, p := range distinct(clean, real) {
+		if err := checkOutputShape(p, outputDir); err != nil {
+			return err
+		}
+	}
+	// Project-relation checks: compare every (output, project) pair so neither a
+	// symlinked output nor a symlinked project can hide an "is the same as / is
+	// an ancestor of" relationship.
+	for _, p := range distinct(clean, real) {
+		for _, pr := range distinct(projectDir, realProject) {
+			if p == pr {
+				return fmt.Errorf("refusing to use the project directory %q as the build output directory — pass --output elsewhere", p)
+			}
+			if dirContains(p, pr) {
+				return fmt.Errorf("refusing to use %q as the build output directory: it contains the project directory", p)
+			}
+		}
+	}
+	return nil
+}
+
+// checkOutputShape covers the path-only safety guards (not project-relative).
+// original is what the user typed, used only in the error messages.
+func checkOutputShape(clean, original string) error {
 	if clean == "" || clean == "." {
-		return fmt.Errorf("refusing to use %q as the build output directory", outputDir)
+		return fmt.Errorf("refusing to use %q as the build output directory", original)
 	}
 	if !filepath.IsAbs(clean) {
-		return fmt.Errorf("build output directory must be an absolute path, got %q", outputDir)
+		return fmt.Errorf("build output directory must be an absolute path, got %q", original)
 	}
 	sep := string(filepath.Separator)
 	// "/" on Unix, plus a Windows drive root ("C:\") or UNC share root
@@ -178,16 +212,34 @@ func validateOutputDir(outputDir, projectDir string) error {
 	if home, err := os.UserHomeDir(); err == nil && home != "" && clean == filepath.Clean(home) {
 		return fmt.Errorf("refusing to use the home directory %q as the build output directory", clean)
 	}
-	if clean == projectDir {
-		return fmt.Errorf("refusing to use the project directory %q as the build output directory — pass --output elsewhere", clean)
-	}
-	if dirContains(clean, projectDir) {
-		return fmt.Errorf("refusing to use %q as the build output directory: it contains the project directory", clean)
-	}
 	if len(strings.Split(strings.Trim(clean, sep), sep)) < 2 {
 		return fmt.Errorf("refusing to use %q as the build output directory: too close to the filesystem root", clean)
 	}
 	return nil
+}
+
+// resolveDeepest returns the symlink-resolved form of p. If p does not exist,
+// it resolves the deepest existing ancestor and re-joins the missing suffix —
+// so the guards can inspect what os.RemoveAll will actually touch, even on the
+// first build (where outputDir doesn't exist yet).
+func resolveDeepest(p string) string {
+	if resolved, err := filepath.EvalSymlinks(p); err == nil {
+		return resolved
+	}
+	parent := filepath.Dir(p)
+	if parent == p || parent == "." {
+		return p
+	}
+	return filepath.Join(resolveDeepest(parent), filepath.Base(p))
+}
+
+// distinct returns [a] if a == b, otherwise [a, b]. Used to iterate over a path
+// "and possibly its symlink-resolved twin" without duplicating work.
+func distinct(a, b string) []string {
+	if a == b {
+		return []string{a}
+	}
+	return []string{a, b}
 }
 
 // dirContains reports whether dir is a strict ancestor of other (both cleaned,
