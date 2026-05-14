@@ -478,7 +478,12 @@ Algorithm (implement exactly):
 8. **Signing key** (`hmacSHA256(key,data) = HMAC-SHA256`): `kDate = hmac("AWS4"+secret, dateStamp)` → `kRegion = hmac(kDate, region)` → `kService = hmac(kRegion, service)` → `kSigning = hmac(kService, "aws4_request")`; `signature = hex(hmac(kSigning, stringToSign))`.
 9. `req.Header.Set("Authorization", "AWS4-HMAC-SHA256 Credential="+AccessKeyID+"/"+credentialScope+", SignedHeaders="+signedHeaders+", Signature="+signature)`.
 
-**Verify:** unit test against the published SigV4 test vector — key `AKIDEXAMPLE`, secret `wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY`, `20150830T123600Z`, region `us-east-1`, service `service`, `GET https://example.amazonaws.com/`, host header `example.amazonaws.com` — expected signature `5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7`. `go test ./internal/awssig` passes.
+**Verify:** unit test against two published AWS SigV4 test vectors (both well-known and reproduced in third-party signer test suites):
+
+1. **get-vanilla** — `GET https://example.amazonaws.com/`, no query, no body, service `service`, region `us-east-1`, host `example.amazonaws.com`, date `20150830T123600Z`, key `AKIDEXAMPLE`, secret `wJalrXUtnFEMI/K7MDENG+bPxRfiCYEXAMPLEKEY`. Expected signature `5fa00fa31553b73ebf1942676e86291e8372ff2a2260956d9b8aae1d763fbf31`. (A previous draft of this plan documented `5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7` here, which is actually the IAM tutorial's signature; the correct get-vanilla value was confirmed against `aws-sdk-go-v2`'s own signer test vectors and by replaying the HMAC chain by hand.)
+2. **IAM ListUsers tutorial** — `GET https://iam.amazonaws.com/?Action=ListUsers&Version=2010-05-08`, `Content-Type: application/x-www-form-urlencoded; charset=utf-8`, service `iam`, same date/creds. Expected signature `5d672d79c15b13162d9279b0855cfba6789a8edb4c82c400e06b5924a6f2b5d7`. Exercises canonical-query-string handling and a signed Content-Type header in addition to host + x-amz-date.
+
+`go test ./internal/awssig` passes both vectors plus targeted tests for the S3 X-Amz-Content-Sha256 path, the empty-body hash constant, session-token folding, the no-Host rejection, and table-tests for `uriEncode` / `canonicalPath` / `canonicalQueryString` / header trim+collapse+case-insensitive matching.
 
 ---
 
