@@ -1,5 +1,7 @@
-# robots.txt — static file copied verbatim into the built site.
-# Update the Sitemap URL if you change baseURL in site.yml.
+# robots.txt — editable fallback. `techgo build` regenerates this file in the
+# output directory from site.baseURL (so the Sitemap: line can't drift); this
+# committed copy is only what `techgo serve` shows on a not-yet-rebuilt dir, so
+# keep the Sitemap URL below roughly in sync with baseURL in site.yml.
 User-agent: *
 Allow: /
 Sitemap: https://techgo.example.com/sitemap.xml
