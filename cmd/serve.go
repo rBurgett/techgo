@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"os"
+	"path"
 	"path/filepath"
 
 	"github.com/spf13/cobra"
@@ -76,11 +77,14 @@ func listenURL(addr net.Addr) string {
 	return fmt.Sprintf("http://%s:%d/", host, ta.Port)
 }
 
-// siteHandler serves the built site from dir as http.FileServer would, but
-// substitutes dir/404.html (with a 404 status) for any path the file server
-// can't find — mirroring the CloudFront custom-error mapping used in production.
+// siteHandler serves the built site from dir as http.FileServer would, but with
+// two production-matching tweaks: (a) a directory without an index.html (e.g.
+// /media/, /episodes/, /css/) is treated as not found instead of rendering Go's
+// built-in directory listing — CloudFront 403/404s those — and (b) any missing
+// path falls through to dir/404.html with a 404 status, mirroring the
+// CloudFront custom-error mapping used in production.
 func siteHandler(dir string) http.Handler {
-	files := http.FileServer(http.Dir(dir))
+	files := http.FileServer(noListDir{http.Dir(dir)})
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		rec := &notFoundCatcher{ResponseWriter: w}
 		files.ServeHTTP(rec, r)
@@ -129,4 +133,32 @@ func (n *notFoundCatcher) Write(b []byte) (int, error) {
 		return len(b), nil // discard the file server's default 404 body
 	}
 	return n.ResponseWriter.Write(b)
+}
+
+// noListDir wraps an http.FileSystem so http.FileServer never renders a
+// directory listing: opening a directory that lacks index.html returns
+// fs.ErrNotExist, which the file server translates into a 404 (in turn caught
+// by notFoundCatcher and turned into 404.html). The site root still works
+// because it does have index.html.
+type noListDir struct{ fs http.FileSystem }
+
+func (d noListDir) Open(name string) (http.File, error) {
+	f, err := d.fs.Open(name)
+	if err != nil {
+		return nil, err
+	}
+	info, err := f.Stat()
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	if info.IsDir() {
+		idx, ierr := d.fs.Open(path.Join(name, "index.html"))
+		if ierr != nil {
+			f.Close()
+			return nil, os.ErrNotExist
+		}
+		idx.Close()
+	}
+	return f, nil
 }
