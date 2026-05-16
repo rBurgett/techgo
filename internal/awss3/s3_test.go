@@ -1,7 +1,10 @@
 package awss3
 
 import (
+	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net/http"
@@ -25,6 +28,20 @@ var testCreds = awssig.Credentials{
 // fixedTime pins the signer's clock for stable canonical requests in tests.
 func fixedTime() time.Time { return time.Date(2026, 5, 14, 12, 0, 0, 0, time.UTC) }
 
+// testBucket is the bucket every test client targets. With an Endpoint
+// override the client uses path-style addressing, so every request path is
+// prefixed with "/" + testBucket — wirePath() builds the expectation.
+const testBucket = "techgo-site"
+
+// wirePath returns the path-style request path the client produces for a
+// given object key (or "" for the list endpoint): /<bucket>[/<key>].
+func wirePath(key string) string {
+	if key == "" {
+		return "/" + testBucket
+	}
+	return "/" + testBucket + "/" + key
+}
+
 // newTestServer spins up an httptest.Server with the given handler and
 // returns a Client targeting it. Callers handle the server's Close in
 // their own t.Cleanup if they need access to the server itself.
@@ -33,7 +50,7 @@ func newTestServer(t *testing.T, h http.HandlerFunc) (*Client, *httptest.Server)
 	ts := httptest.NewServer(h)
 	t.Cleanup(ts.Close)
 	c := &Client{
-		Bucket:   "techgo-site",
+		Bucket:   testBucket,
 		Region:   "us-east-1",
 		Creds:    testCreds,
 		HTTP:     ts.Client(),
@@ -62,8 +79,8 @@ func TestPutObjectShape(t *testing.T) {
 	if got.Method != http.MethodPut {
 		t.Errorf("method = %q, want PUT", got.Method)
 	}
-	if got.URL.Path != "/index.html" {
-		t.Errorf("path = %q, want /index.html", got.URL.Path)
+	if got.URL.Path != wirePath("index.html") {
+		t.Errorf("path = %q, want %q", got.URL.Path, wirePath("index.html"))
 	}
 	if got.Header.Get("Content-Type") != "text/html; charset=utf-8" {
 		t.Errorf("Content-Type = %q", got.Header.Get("Content-Type"))
@@ -99,20 +116,20 @@ func TestPutObjectAppliesPrefix(t *testing.T) {
 	if err := c.PutObject(context.Background(), "css/style.css", []byte("body{}"), "text/css", ""); err != nil {
 		t.Fatalf("PutObject: %v", err)
 	}
-	if gotPath != "/site/css/style.css" {
-		t.Errorf("path = %q, want /site/css/style.css (prefix applied)", gotPath)
+	if want := wirePath("site/css/style.css"); gotPath != want {
+		t.Errorf("path = %q, want %q (prefix applied)", gotPath, want)
 	}
 }
 
 func TestPutObjectNormalizesPrefix(t *testing.T) {
 	cases := map[string]string{
-		"":         "/key",
-		"site":     "/site/key",
-		"site/":    "/site/key",
-		"/site":    "/site/key",
-		"/site/":   "/site/key",
-		"a/b":      "/a/b/key",
-		"//a//b//": "/a/b/key",
+		"":         wirePath("key"),
+		"site":     wirePath("site/key"),
+		"site/":    wirePath("site/key"),
+		"/site":    wirePath("site/key"),
+		"/site/":   wirePath("site/key"),
+		"a/b":      wirePath("a/b/key"),
+		"//a//b//": wirePath("a/b/key"),
 	}
 	for prefix, wantPath := range cases {
 		var gotPath string
@@ -146,7 +163,7 @@ func TestPutObjectNon2xxIncludesAWSErrorBody(t *testing.T) {
 
 func TestGetObjectFoundAndNotFound(t *testing.T) {
 	c, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/exists" {
+		if r.URL.Path == wirePath("exists") {
 			_, _ = w.Write([]byte("hello"))
 			return
 		}
@@ -182,8 +199,8 @@ func TestDeleteObjectAcceptsBoth204And200(t *testing.T) {
 	if err := c.DeleteObject(context.Background(), "obsolete.html"); err != nil {
 		t.Fatalf("DeleteObject (204): %v", err)
 	}
-	if sawMethod != http.MethodDelete || sawPath != "/obsolete.html" {
-		t.Errorf("got %s %s, want DELETE /obsolete.html", sawMethod, sawPath)
+	if sawMethod != http.MethodDelete || sawPath != wirePath("obsolete.html") {
+		t.Errorf("got %s %s, want DELETE %s", sawMethod, sawPath, wirePath("obsolete.html"))
 	}
 
 	status = http.StatusOK
@@ -204,8 +221,8 @@ func TestListObjectsPagination(t *testing.T) {
 	var calls int
 	var seenTokens []string
 	c, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" {
-			t.Errorf("list path = %q, want /", r.URL.Path)
+		if r.URL.Path != wirePath("") {
+			t.Errorf("list path = %q, want %q", r.URL.Path, wirePath(""))
 		}
 		q := r.URL.Query()
 		if q.Get("list-type") != "2" {
@@ -299,5 +316,68 @@ func TestListObjectsBuildsQueryWithAWSEscape(t *testing.T) {
 	// stay unencoded. AWS rules demand '%2B' for '+' and '%2F' for '/'.
 	if !strings.Contains(gotRawQuery, "prefix=a%2Bb%2Fc%2F") {
 		t.Errorf("raw query = %q, want prefix=a%%2Bb%%2Fc%%2F (AWS-escaped)", gotRawQuery)
+	}
+}
+
+// TestPathStyleAddressing verifies the Endpoint-override path-style form puts
+// the bucket in the URL path (so LocalStack/MinIO know which bucket) and
+// preserves any base path the endpoint carries — and that the default
+// (no override) stays virtual-hosted with the bucket only in the host.
+func TestPathStyleAddressing(t *testing.T) {
+	var gotPath string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotPath = r.URL.Path
+		w.WriteHeader(http.StatusOK)
+	}))
+	t.Cleanup(srv.Close)
+
+	// Endpoint with a base path: /s3/<bucket>/<key>.
+	c := &Client{
+		Bucket: "techgo-site", Region: "us-east-1", Creds: testCreds,
+		HTTP: srv.Client(), Endpoint: srv.URL + "/s3", Now: fixedTime,
+	}
+	if err := c.PutObject(context.Background(), "media/0001.mp3", []byte("x"), "audio/mpeg", ""); err != nil {
+		t.Fatalf("PutObject: %v", err)
+	}
+	if gotPath != "/s3/techgo-site/media/0001.mp3" {
+		t.Errorf("path-style path = %q, want /s3/techgo-site/media/0001.mp3", gotPath)
+	}
+
+	// Default (no override) is virtual-hosted: bucket is in endpoint()'s host,
+	// the request path is just the key.
+	vc := &Client{Bucket: "techgo-site", Region: "us-east-1"}
+	if vc.endpoint() != "https://techgo-site.s3.us-east-1.amazonaws.com" {
+		t.Errorf("virtual-host endpoint = %q", vc.endpoint())
+	}
+}
+
+// TestPutObjectStreamHashesWithoutHoldingBodyInMemory verifies the streaming
+// PUT path: the body is signed correctly (the server, recomputing nothing,
+// just needs the bytes to arrive) and the request carries the SigV4
+// X-Amz-Content-Sha256 of the streamed content. It also asserts the reader
+// was rewound (the wire body equals the full input, not a post-hash empty
+// reader).
+func TestPutObjectStreamHashesWithoutHoldingBodyInMemory(t *testing.T) {
+	payload := bytes.Repeat([]byte("techgo-podcast-bytes "), 4096) // ~84 KiB
+	wantHash := sha256.Sum256(payload)
+
+	var gotBody []byte
+	var gotSha string
+	c, _ := newTestServer(t, func(w http.ResponseWriter, r *http.Request) {
+		gotBody, _ = io.ReadAll(r.Body)
+		gotSha = r.Header.Get("X-Amz-Content-Sha256")
+		w.WriteHeader(http.StatusOK)
+	})
+
+	if err := c.PutObjectStream(context.Background(), "media/0001.mp4",
+		bytes.NewReader(payload), int64(len(payload)), "video/mp4",
+		"public, max-age=86400, must-revalidate"); err != nil {
+		t.Fatalf("PutObjectStream: %v", err)
+	}
+	if !bytes.Equal(gotBody, payload) {
+		t.Errorf("wire body length = %d, want %d (reader not rewound after hashing?)", len(gotBody), len(payload))
+	}
+	if gotSha != hex.EncodeToString(wantHash[:]) {
+		t.Errorf("X-Amz-Content-Sha256 = %q, want %x", gotSha, wantHash)
 	}
 }

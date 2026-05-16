@@ -79,13 +79,11 @@ func (c *Client) CreateInvalidation(ctx context.Context, distributionID string, 
 	if strings.TrimSpace(distributionID) == "" {
 		return "", fmt.Errorf("awscf: distributionID is required")
 	}
-	if len(pathsIn) == 0 {
-		return "", fmt.Errorf("awscf: at least one path is required")
-	}
-
-	normalized := make([]string, len(pathsIn))
-	for i, p := range pathsIn {
-		normalized[i] = normalizePath(p)
+	// NormalizePaths trims, ensures a leading '/', and drops blank entries.
+	// If nothing's left, fail rather than silently sending an empty batch.
+	normalized := NormalizePaths(pathsIn)
+	if len(normalized) == 0 {
+		return "", fmt.Errorf("awscf: at least one non-empty path is required")
 	}
 
 	now := c.now()
@@ -151,26 +149,29 @@ func marshalRequestXML(v any) ([]byte, error) {
 	return buf.Bytes(), nil
 }
 
-// normalizePath returns p with exactly one leading '/', so callers can pass
-// "/foo", "foo", or even "  foo  " interchangeably. Empty input falls back
-// to "/*" — the most common (and CloudFront-cheapest) invalidation path,
-// kept for callers that pass a stray empty entry from a CSV split.
+// normalizePath returns p (already trimmed by the caller) with exactly one
+// leading '/', so "/foo" and "foo" are equivalent.
 func normalizePath(p string) string {
-	p = strings.TrimSpace(p)
-	if p == "" {
-		return "/*"
-	}
 	if !strings.HasPrefix(p, "/") {
 		p = "/" + p
 	}
 	return p
 }
 
-// NormalizePaths is the exported batch form of normalizePath, intended for
-// the deploy command which receives a comma-separated --paths flag.
+// NormalizePaths is the exported batch form for the deploy command, which
+// receives a comma-separated --paths flag. Blank/whitespace-only entries are
+// DROPPED, not expanded — a trailing comma ("--paths=/a,/b,") must not
+// silently broaden the invalidation to the whole distribution. Requesting a
+// full invalidation is done explicitly with "/*" (the flag's default value),
+// never implicitly via an empty segment. If every entry is blank the result
+// is empty and CreateInvalidation rejects it (fail safe, not fail wide).
 func NormalizePaths(in []string) []string {
 	out := make([]string, 0, len(in))
 	for _, p := range in {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
 		out = append(out, normalizePath(p))
 	}
 	return out

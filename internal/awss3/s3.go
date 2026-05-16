@@ -13,15 +13,21 @@
 //   - DeleteObject — virtual-hosted DELETE for prune.
 //
 // All four prepend Client.Prefix when constructing the URL and strip it back
-// off list results, so callers work in terms of unscoped keys. URLs are the
-// virtual-hosted regional form (https://<bucket>.s3.<region>.amazonaws.com/...);
-// Endpoint can be overridden for LocalStack / emulator / tests, in which case
-// the bucket is NOT folded into the hostname (the override is used verbatim).
+// off list results, so callers work in terms of unscoped keys.
+//
+// Addressing: with no Endpoint override, requests use AWS's virtual-hosted
+// regional form, https://<bucket>.s3.<region>.amazonaws.com/<key>. When
+// Endpoint is set (LocalStack, MinIO, an httptest server), requests switch to
+// path-style, <endpoint>/<bucket>/<key>, preserving any base path on the
+// endpoint URL — the same convention the AWS SDKs use for custom endpoints,
+// and the form S3-compatible servers understand without per-bucket DNS.
 package awss3
 
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/xml"
 	"fmt"
 	"io"
@@ -60,10 +66,26 @@ type Client struct {
 }
 
 // PutObject uploads body to <prefix><key> with the given Content-Type and
-// Cache-Control headers (either may be empty to skip). The body is read into
-// memory once for signing (SigV4 hashes the payload) and once for the wire.
+// Cache-Control headers (either may be empty to skip). Suitable for small
+// payloads (the deploy marker, rendered HTML/feed); large files should use
+// PutObjectStream so they aren't held in RAM.
 func (c *Client) PutObject(ctx context.Context, key string, body []byte, contentType, cacheControl string) error {
-	req, err := c.newRequest(ctx, http.MethodPut, c.prefixedKey(key), "", bytes.NewReader(body))
+	return c.PutObjectStream(ctx, key, bytes.NewReader(body), int64(len(body)), contentType, cacheControl)
+}
+
+// PutObjectStream uploads size bytes read from body to <prefix><key>. body
+// must be seekable: SigV4 needs the payload's SHA-256 before the request is
+// sent, so PutObjectStream streams body once to hash it (bounded memory —
+// it never holds the whole object), seeks back to the start, and sends the
+// same reader as the wire body. This keeps `techgo deploy` memory flat even
+// for large episode .mp4/.mp3 files. contentType/cacheControl are skipped
+// when empty.
+func (c *Client) PutObjectStream(ctx context.Context, key string, body io.ReadSeeker, size int64, contentType, cacheControl string) error {
+	hash, err := hashReadSeeker(body)
+	if err != nil {
+		return fmt.Errorf("s3 PUT %s: hashing payload: %w", key, err)
+	}
+	req, err := c.newRequest(ctx, http.MethodPut, c.prefixedKey(key), "", body)
 	if err != nil {
 		return err
 	}
@@ -73,8 +95,8 @@ func (c *Client) PutObject(ctx context.Context, key string, body []byte, content
 	if cacheControl != "" {
 		req.Header.Set("Cache-Control", cacheControl)
 	}
-	req.ContentLength = int64(len(body))
-	if err := c.sign(req, body); err != nil {
+	req.ContentLength = size
+	if err := awssig.SignRequestWithPayloadHash(req, hash, "s3", c.Region, c.Creds, c.now()); err != nil {
 		return err
 	}
 	resp, err := c.httpClient().Do(req)
@@ -86,6 +108,24 @@ func (c *Client) PutObject(ctx context.Context, key string, body []byte, content
 		return fmt.Errorf("s3 PUT %s: %s", key, errorBody(resp))
 	}
 	return nil
+}
+
+// hashReadSeeker computes the hex SHA-256 of r from its current position to
+// EOF using a streaming copy (bounded memory), then seeks r back to where it
+// started so the same reader can be replayed as the request body.
+func hashReadSeeker(r io.ReadSeeker) (string, error) {
+	start, err := r.Seek(0, io.SeekCurrent)
+	if err != nil {
+		return "", err
+	}
+	h := sha256.New()
+	if _, err := io.Copy(h, r); err != nil {
+		return "", err
+	}
+	if _, err := r.Seek(start, io.SeekStart); err != nil {
+		return "", err
+	}
+	return hex.EncodeToString(h.Sum(nil)), nil
 }
 
 // GetObject fetches the object at <prefix><key>. A 404 returns found=false
@@ -227,6 +267,12 @@ func (c *Client) listOnce(ctx context.Context, prefix, token string) (keys []str
 // (which targets the bucket root regardless of Prefix — the prefix scopes
 // the list via the query string instead). rawQuery is the pre-encoded
 // canonical query (e.g. "list-type=2&prefix=foo"). body may be nil.
+//
+// With no Endpoint override the bucket is already in the host (see endpoint())
+// so the URL path is just the key. With an Endpoint override we use path-style
+// addressing — <endpoint-base-path>/<bucket>[/<wirePath>] — so LocalStack /
+// MinIO / a test server actually know which bucket is addressed, and any base
+// path the endpoint carries is preserved rather than clobbered.
 func (c *Client) newRequest(ctx context.Context, method, wirePath, rawQuery string, body io.Reader) (*http.Request, error) {
 	u, err := url.Parse(c.endpoint())
 	if err != nil {
@@ -235,7 +281,18 @@ func (c *Client) newRequest(ctx context.Context, method, wirePath, rawQuery stri
 	// The signer reads URL.EscapedPath() and re-encodes; we set the unencoded
 	// path so URL.String() produces correctly-escaped wire bytes and the
 	// signer sees the same form.
-	u.Path = "/" + wirePath
+	if c.Endpoint == "" {
+		u.Path = "/" + wirePath
+	} else {
+		segs := []string{strings.TrimRight(u.Path, "/"), c.Bucket}
+		if wirePath != "" {
+			segs = append(segs, wirePath)
+		}
+		u.Path = strings.Join(segs, "/")
+		if !strings.HasPrefix(u.Path, "/") {
+			u.Path = "/" + u.Path
+		}
+	}
 	u.RawQuery = rawQuery
 	return http.NewRequestWithContext(ctx, method, u.String(), body)
 }

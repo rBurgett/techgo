@@ -74,6 +74,30 @@ type Credentials struct {
 // CloudFront API regardless of where the distribution lives. now is the
 // signing time, injected so tests are deterministic.
 func SignRequest(req *http.Request, body []byte, service, region string, creds Credentials, now time.Time) error {
+	return SignRequestWithPayloadHash(req, HashPayload(body), service, region, creds, now)
+}
+
+// HashPayload returns the hex SHA-256 of body — the value SigV4 calls the
+// "payload hash". An empty/nil body returns the precomputed empty-string hash
+// so callers (and SignRequest) don't pay to hash nothing. Exported so callers
+// that stream a large body from disk can compute the hash with a bounded-memory
+// streaming read and pass it to SignRequestWithPayloadHash.
+func HashPayload(body []byte) string {
+	if len(body) == 0 {
+		return emptyPayloadHash
+	}
+	sum := sha256.Sum256(body)
+	return hex.EncodeToString(sum[:])
+}
+
+// SignRequestWithPayloadHash is SignRequest with the payload hash supplied by
+// the caller instead of computed from an in-memory []byte. It exists so a
+// large file can be uploaded without loading it into RAM: hash it with a
+// streaming read (HashPayload over chunks, or sha256 + io.Copy), rewind, set
+// req.Body to the file, and sign here. payloadHashHex must be the lowercase
+// hex SHA-256 of the exact bytes that will be transmitted (use HashPayload
+// for an empty body's constant).
+func SignRequestWithPayloadHash(req *http.Request, payloadHashHex, service, region string, creds Credentials, now time.Time) error {
 	if req == nil {
 		return fmt.Errorf("awssig: request is nil")
 	}
@@ -82,6 +106,9 @@ func SignRequest(req *http.Request, body []byte, service, region string, creds C
 	}
 	if req.Host == "" && req.URL.Host == "" {
 		return fmt.Errorf("awssig: request has no Host (set req.Host or req.URL.Host)")
+	}
+	if payloadHashHex == "" {
+		return fmt.Errorf("awssig: empty payload hash (use HashPayload, including for an empty body)")
 	}
 	// http.NewRequest always initializes Header, but a bare-handed *http.Request
 	// might not; .Set on a nil http.Header would panic, so make the empty map.
@@ -92,11 +119,7 @@ func SignRequest(req *http.Request, body []byte, service, region string, creds C
 	amzDate := now.UTC().Format("20060102T150405Z")
 	dateStamp := now.UTC().Format("20060102")
 
-	payloadHash := emptyPayloadHash
-	if len(body) > 0 {
-		sum := sha256.Sum256(body)
-		payloadHash = hex.EncodeToString(sum[:])
-	}
+	payloadHash := payloadHashHex
 
 	// Set the signed-by-default headers BEFORE building the canonical request,
 	// so they're included in the signature.

@@ -110,25 +110,29 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 		Endpoint: depCfg.cfEndpoint,
 	}
 
-	ctx := context.Background()
+	ctx := cmd.Context()
 	w := cmd.OutOrStdout()
 
-	// Prune guard: only relevant when --delete is on. Run it BEFORE any
-	// uploads so a bad target fails fast. The guard's read-only S3 calls
-	// happen even in dry-run, so the dry-run accurately reflects whether
-	// the real deploy would be allowed to prune.
-	pruneAllowed := false
-	if deployDelete {
-		ok, err := checkDeployPruneGuard(ctx, s3)
-		if err != nil {
-			return err
-		}
-		if !ok {
-			return fmt.Errorf(
-				"refusing to prune s3://%s/%s — no %s marker and the target isn't empty; re-run with --delete=false, or remove unrelated objects first",
-				depCfg.bucket, depCfg.prefix, deployMarker)
-		}
-		pruneAllowed = true
+	// Ownership check, always run (read-only, so it's accurate even in
+	// dry-run). ownsTarget is true when the target already carries our
+	// .techgo-deploy marker OR is empty (a first deploy). It gates BOTH
+	// pruning and whether we (re)write the marker:
+	//
+	//   - --delete (the default) requires ownsTarget; otherwise refuse
+	//     before any upload, so a mistyped bucket can't wipe a stranger's
+	//     objects.
+	//   - The marker is written ONLY when ownsTarget. Critically, a
+	//     `--delete=false` upload into a non-empty unmarked bucket must NOT
+	//     plant the marker — doing so would make a later default deploy
+	//     think it owns (and may prune) those unrelated objects.
+	ownsTarget, err := checkDeployPruneGuard(ctx, s3)
+	if err != nil {
+		return err
+	}
+	if deployDelete && !ownsTarget {
+		return fmt.Errorf(
+			"refusing to prune s3://%s/%s — no %s marker and the target isn't empty; re-run with --delete=false, or remove unrelated objects first",
+			depCfg.bucket, depCfg.prefix, deployMarker)
 	}
 
 	localKeys := make(map[string]bool, len(files))
@@ -136,7 +140,9 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 		localKeys[f.key] = true
 	}
 
-	// Uploads.
+	// Uploads. Stream each file from disk (PutObjectStream hashes it with a
+	// bounded-memory streaming read, then replays it as the body) so a large
+	// episode .mp4/.mp3 never has to fit in RAM.
 	for _, f := range files {
 		ct := contentTypeFor(f.key)
 		cc := cacheControlFor(f.key)
@@ -144,25 +150,24 @@ func runDeploy(cmd *cobra.Command, _ []string) error {
 		if deployDryRun {
 			continue
 		}
-		body, err := os.ReadFile(f.absPath)
-		if err != nil {
-			return fmt.Errorf("reading %s: %w", f.absPath, err)
-		}
-		if err := s3.PutObject(ctx, f.key, body, ct, cc); err != nil {
+		if err := putFile(ctx, s3, f, ct, cc); err != nil {
 			return err
 		}
 	}
 
-	// Write/refresh the deploy marker so prune is allowed on subsequent runs.
-	if !deployDryRun {
+	// Write/refresh the deploy marker so prune is allowed on subsequent runs
+	// — but only when we own the target (see ownsTarget above). A
+	// `--delete=false` upload into someone else's non-empty bucket leaves no
+	// marker, so the safety guard still fires next time.
+	if !deployDryRun && ownsTarget {
 		stamp := fmt.Sprintf("techgo deploy %s\n", time.Now().UTC().Format(time.RFC3339))
 		if err := s3.PutObject(ctx, deployMarker, []byte(stamp), "text/plain; charset=utf-8", "no-cache"); err != nil {
 			return fmt.Errorf("writing %s: %w", deployMarker, err)
 		}
 	}
 
-	// Prune stale objects.
-	if pruneAllowed {
+	// Prune stale objects (only when --delete and we own the target).
+	if deployDelete && ownsTarget {
 		toDelete, err := stalePruneKeys(ctx, s3, localKeys)
 		if err != nil {
 			return err
@@ -238,6 +243,21 @@ func parseDeployEnv(env map[string]string) (*deployEnv, error) {
 		s3Endpoint: env["AWS_ENDPOINT_URL_S3"],
 		cfEndpoint: env["AWS_ENDPOINT_URL_CLOUDFRONT"],
 	}, nil
+}
+
+// putFile streams f from disk to S3. The *os.File is an io.ReadSeeker, so
+// PutObjectStream can hash it with a bounded-memory pass and rewind without
+// the deploy ever holding a whole episode in RAM.
+func putFile(ctx context.Context, s3 *awss3.Client, f deployFile, contentType, cacheControl string) error {
+	fh, err := os.Open(f.absPath)
+	if err != nil {
+		return fmt.Errorf("reading %s: %w", f.absPath, err)
+	}
+	defer fh.Close()
+	if err := s3.PutObjectStream(ctx, f.key, fh, f.size, contentType, cacheControl); err != nil {
+		return err
+	}
+	return nil
 }
 
 // deployFile is one file we'll upload: the S3 key (forward-slash, relative to
@@ -380,6 +400,11 @@ func contentTypeFor(key string) string {
 //     robots.txt): 1 day. The post-deploy /* invalidation purges the edge
 //     regardless.
 func cacheControlFor(key string) string {
+	// Match case-insensitively, like contentTypeFor (which lowercases the
+	// extension). techgo's own build output is all-lowercase, but staying
+	// consistent means a stray uppercase name never silently falls to the
+	// catch-all policy.
+	key = strings.ToLower(key)
 	switch {
 	case strings.HasSuffix(key, ".html"):
 		return "public, max-age=0, must-revalidate"

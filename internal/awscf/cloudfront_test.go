@@ -216,18 +216,30 @@ func TestCreateInvalidationRejectsEmptyInput(t *testing.T) {
 	if _, err := c.CreateInvalidation(context.Background(), "X", nil); err == nil {
 		t.Error("nil paths: nil error, want a rejection")
 	}
+	// All-blank input must fail safe (reject), NOT fall back to /* and
+	// invalidate the whole distribution.
+	if _, err := c.CreateInvalidation(context.Background(), "X", []string{"", "  ", "\t"}); err == nil {
+		t.Error("all-blank paths: nil error, want a rejection (must not silently become /*)")
+	}
 }
 
 func TestNormalizePaths(t *testing.T) {
-	in := []string{"/a", "b", "  c  ", "", "/d/*"}
-	want := []string{"/a", "/b", "/c", "/*", "/d/*"}
+	// Blank/whitespace-only entries are DROPPED (not turned into /*), so a
+	// trailing comma in --paths can't accidentally invalidate everything.
+	in := []string{"/a", "b", "  c  ", "", "  ", "/d/*"}
+	want := []string{"/a", "/b", "/c", "/d/*"}
 	got := NormalizePaths(in)
 	if len(got) != len(want) {
-		t.Fatalf("got %d, want %d", len(got), len(want))
+		t.Fatalf("NormalizePaths(%v) = %v (len %d), want %v (len %d)", in, got, len(got), want, len(want))
 	}
 	for i := range got {
 		if got[i] != want[i] {
 			t.Errorf("[%d] %q, want %q", i, got[i], want[i])
 		}
+	}
+	// A lone "/*" (the flag default) is preserved — explicit full
+	// invalidation still works.
+	if got := NormalizePaths([]string{"/*"}); len(got) != 1 || got[0] != "/*" {
+		t.Errorf("NormalizePaths([/*]) = %v, want [/*]", got)
 	}
 }

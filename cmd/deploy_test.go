@@ -158,6 +158,7 @@ func TestCollectDeployFilesSkipsBuildMarker(t *testing.T) {
 // ListBucketResult. Just enough surface to drive runDeploy.
 type fakeS3 struct {
 	mu      sync.Mutex
+	bucket  string // path-style requests arrive as /<bucket>/<key>
 	objects map[string][]byte
 	reqs    []recordedReq
 }
@@ -170,8 +171,16 @@ type recordedReq struct {
 	hdr    http.Header
 }
 
-func newFakeS3() *fakeS3 {
-	return &fakeS3{objects: map[string][]byte{}}
+func newFakeS3(bucket string) *fakeS3 {
+	return &fakeS3{bucket: bucket, objects: map[string][]byte{}}
+}
+
+// objectKey strips the path-style "/<bucket>/" prefix the client sends when
+// Endpoint is overridden, leaving the (possibly S3_PREFIX-scoped) object key.
+func (s *fakeS3) objectKey(urlPath string) string {
+	p := strings.TrimPrefix(urlPath, "/")
+	p = strings.TrimPrefix(p, s.bucket)
+	return strings.TrimPrefix(p, "/")
 }
 
 func (s *fakeS3) handler(t *testing.T) http.HandlerFunc {
@@ -184,7 +193,7 @@ func (s *fakeS3) handler(t *testing.T) http.HandlerFunc {
 		})
 		s.mu.Unlock()
 
-		key := strings.TrimPrefix(r.URL.Path, "/")
+		key := s.objectKey(r.URL.Path)
 		switch r.Method {
 		case http.MethodPut:
 			s.mu.Lock()
@@ -303,7 +312,12 @@ func setupDeployProject(t *testing.T, s3URL, cfURL string) (projectDir, outputDi
 
 func runDeployCmd(t *testing.T, projectDir, outputDir string, extra ...string) (string, error) {
 	t.Helper()
-	t.Cleanup(func() {
+	// cobra's flag vars are package-level and persist across rootCmd.Execute()
+	// calls; a real CLI invocation is one process, so reset to defaults at the
+	// START of every call (not just in cleanup) — otherwise a second
+	// runDeployCmd in the same test would inherit the first call's parsed
+	// flags (e.g. a sticky --delete=false).
+	reset := func() {
 		projectFlag = "."
 		outputFlag = "public"
 		deployDryRun = false
@@ -313,7 +327,9 @@ func runDeployCmd(t *testing.T, projectDir, outputDir string, extra ...string) (
 		rootCmd.SetArgs(nil)
 		rootCmd.SetOut(nil)
 		rootCmd.SetErr(nil)
-	})
+	}
+	reset()
+	t.Cleanup(reset)
 	var buf bytes.Buffer
 	rootCmd.SetOut(&buf)
 	rootCmd.SetErr(&buf)
@@ -324,7 +340,7 @@ func runDeployCmd(t *testing.T, projectDir, outputDir string, extra ...string) (
 }
 
 func TestDeployCommandDryRunPrintsPlanWithoutWriting(t *testing.T) {
-	s3 := newFakeS3()
+	s3 := newFakeS3("techgo-site")
 	cf := newFakeCF()
 	s3srv := httptest.NewServer(s3.handler(t))
 	t.Cleanup(s3srv.Close)
@@ -375,7 +391,7 @@ func TestDeployCommandDryRunPrintsPlanWithoutWriting(t *testing.T) {
 }
 
 func TestDeployCommandFullRunUploadsMarkerInvalidates(t *testing.T) {
-	s3 := newFakeS3()
+	s3 := newFakeS3("techgo-site")
 	cf := newFakeCF()
 	s3srv := httptest.NewServer(s3.handler(t))
 	t.Cleanup(s3srv.Close)
@@ -415,7 +431,7 @@ func TestDeployCommandFullRunUploadsMarkerInvalidates(t *testing.T) {
 		if r.method != http.MethodPut {
 			continue
 		}
-		headersByKey[strings.TrimPrefix(r.path, "/")] = r.hdr
+		headersByKey[s3.objectKey(r.path)] = r.hdr
 	}
 	if ct := headersByKey["index.html"].Get("Content-Type"); ct != "text/html; charset=utf-8" {
 		t.Errorf("index.html Content-Type = %q", ct)
@@ -449,7 +465,7 @@ func TestDeployCommandFullRunUploadsMarkerInvalidates(t *testing.T) {
 }
 
 func TestDeployCommandPrunesStaleObjects(t *testing.T) {
-	s3 := newFakeS3()
+	s3 := newFakeS3("techgo-site")
 	cf := newFakeCF()
 	s3srv := httptest.NewServer(s3.handler(t))
 	t.Cleanup(s3srv.Close)
@@ -484,7 +500,7 @@ func TestDeployCommandPrunesStaleObjects(t *testing.T) {
 }
 
 func TestDeployCommandRefusesPruneWithoutMarker(t *testing.T) {
-	s3 := newFakeS3()
+	s3 := newFakeS3("techgo-site")
 	cf := newFakeCF()
 	s3srv := httptest.NewServer(s3.handler(t))
 	t.Cleanup(s3srv.Close)
@@ -517,7 +533,7 @@ func TestDeployCommandRefusesPruneWithoutMarker(t *testing.T) {
 func TestDeployCommandAllowsFirstDeployToEmptyBucket(t *testing.T) {
 	// No marker, no objects — the empty-prefix carve-out lets the first
 	// deploy through.
-	s3 := newFakeS3()
+	s3 := newFakeS3("techgo-site")
 	cf := newFakeCF()
 	s3srv := httptest.NewServer(s3.handler(t))
 	t.Cleanup(s3srv.Close)
@@ -535,7 +551,7 @@ func TestDeployCommandAllowsFirstDeployToEmptyBucket(t *testing.T) {
 }
 
 func TestDeployCommandWithDeleteFalseSkipsGuardAndPrune(t *testing.T) {
-	s3 := newFakeS3()
+	s3 := newFakeS3("techgo-site")
 	cf := newFakeCF()
 	s3srv := httptest.NewServer(s3.handler(t))
 	t.Cleanup(s3srv.Close)
@@ -561,10 +577,46 @@ func TestDeployCommandWithDeleteFalseSkipsGuardAndPrune(t *testing.T) {
 	if strings.Contains(out, "DELETE ") {
 		t.Errorf("--delete=false should not print any DELETE lines:\n%s", out)
 	}
+	// CRITICAL (the marker-poisoning fix): a --delete=false upload into a
+	// non-empty, unmarked bucket must NOT plant the .techgo-deploy marker.
+	// Planting it would make the *next* default `techgo deploy` think it owns
+	// the prefix and prune the stranger's objects.
+	if _, ok := s3.objects[".techgo-deploy"]; ok {
+		t.Error("marker was written into an unowned bucket with --delete=false — a later default deploy would now wrongly prune it")
+	}
+
+	// Prove the consequence: a subsequent default deploy still refuses,
+	// because the marker was (correctly) never planted.
+	if _, err := runDeployCmd(t, projectDir, outputDir); err == nil {
+		t.Error("a follow-up default deploy should still refuse to prune (marker must not have been planted)")
+	} else if !strings.Contains(err.Error(), "refusing to prune") {
+		t.Errorf("follow-up deploy error = %v, want 'refusing to prune'", err)
+	}
+}
+
+// TestDeployCommandDeleteFalseToEmptyBucketDoesPlantMarker is the companion to
+// the above: with an *empty* target, --delete=false legitimately establishes
+// ownership (nothing unrelated to endanger), so the marker IS written and a
+// later default deploy is allowed.
+func TestDeployCommandDeleteFalseToEmptyBucketDoesPlantMarker(t *testing.T) {
+	s3 := newFakeS3("techgo-site")
+	cf := newFakeCF()
+	s3srv := httptest.NewServer(s3.handler(t))
+	t.Cleanup(s3srv.Close)
+	cfsrv := httptest.NewServer(cf.handler(t))
+	t.Cleanup(cfsrv.Close)
+
+	projectDir, outputDir := setupDeployProject(t, s3srv.URL, cfsrv.URL)
+	if _, err := runDeployCmd(t, projectDir, outputDir, "--delete=false"); err != nil {
+		t.Fatalf("deploy --delete=false to empty bucket: %v", err)
+	}
+	if _, ok := s3.objects[".techgo-deploy"]; !ok {
+		t.Error("first deploy to an empty bucket should establish ownership (write the marker) even with --delete=false")
+	}
 }
 
 func TestDeployCommandNoInvalidateSkipsCloudFront(t *testing.T) {
-	s3 := newFakeS3()
+	s3 := newFakeS3("techgo-site")
 	cf := newFakeCF()
 	s3srv := httptest.NewServer(s3.handler(t))
 	t.Cleanup(s3srv.Close)
@@ -589,7 +641,7 @@ func TestDeployCommandNoInvalidateSkipsCloudFront(t *testing.T) {
 func TestDeployCommandWithPrefix(t *testing.T) {
 	// Add an S3_PREFIX to .env: every PUT/GET/DELETE must arrive under that
 	// prefix, and the marker check happens under the prefix too.
-	s3 := newFakeS3()
+	s3 := newFakeS3("bk")
 	cf := newFakeCF()
 	s3srv := httptest.NewServer(s3.handler(t))
 	t.Cleanup(s3srv.Close)
