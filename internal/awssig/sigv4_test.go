@@ -427,3 +427,48 @@ func TestSignRequestEscapedPathDiffersFromDecoded(t *testing.T) {
 		t.Errorf("expected different signatures for /foo%%2Fbar vs /foo/bar (different wire bytes); got identical:\n%s", a1)
 	}
 }
+
+// TestSignRequestWithPayloadHashMatchesInMemory proves the streaming entry
+// point (caller supplies the precomputed hash) yields a byte-identical
+// signature to the in-memory SignRequest path — so a large file can be
+// uploaded with bounded memory without changing the wire bytes.
+func TestSignRequestWithPayloadHashMatchesInMemory(t *testing.T) {
+	body := []byte(`{"episode":"0001","note":"a fairly chunky body & <stuff>"}`)
+
+	inMem, err := http.NewRequest(http.MethodPut,
+		"https://bucket.s3.us-east-1.amazonaws.com/media/0001.mp3", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inMem.Header.Set("Content-Type", "audio/mpeg")
+	if err := SignRequest(inMem, body, "s3", "us-east-1", testCreds, testTime); err != nil {
+		t.Fatal(err)
+	}
+
+	streamed, err := http.NewRequest(http.MethodPut,
+		"https://bucket.s3.us-east-1.amazonaws.com/media/0001.mp3", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	streamed.Header.Set("Content-Type", "audio/mpeg")
+	if err := SignRequestWithPayloadHash(streamed, HashPayload(body), "s3", "us-east-1", testCreds, testTime); err != nil {
+		t.Fatal(err)
+	}
+
+	if a, b := inMem.Header.Get("Authorization"), streamed.Header.Get("Authorization"); a != b {
+		t.Errorf("streaming signature differs from in-memory:\n in-mem: %s\nstream:  %s", a, b)
+	}
+	if a, b := inMem.Header.Get("X-Amz-Content-Sha256"), streamed.Header.Get("X-Amz-Content-Sha256"); a != b {
+		t.Errorf("content-sha256 differs: %s vs %s", a, b)
+	}
+
+	// HashPayload's empty-body constant matches the documented SigV4 value.
+	if HashPayload(nil) != emptyPayloadHash || HashPayload([]byte{}) != emptyPayloadHash {
+		t.Error("HashPayload of an empty body must be the precomputed empty-string SHA-256")
+	}
+	// And an empty hash is rejected (callers must use HashPayload).
+	r, _ := http.NewRequest(http.MethodGet, "https://example.amazonaws.com/", nil)
+	if err := SignRequestWithPayloadHash(r, "", "s3", "us-east-1", testCreds, testTime); err == nil {
+		t.Error("SignRequestWithPayloadHash with empty hash: nil error, want a rejection")
+	}
+}

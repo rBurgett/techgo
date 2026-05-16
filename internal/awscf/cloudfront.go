@@ -1,0 +1,199 @@
+// Package awscf is a minimal CloudFront client — just one operation,
+// CreateInvalidation, which `techgo deploy` calls at the end of a deploy to
+// purge edge caches for the paths that just changed.
+//
+// The CloudFront API is signed in us-east-1 / "cloudfront" regardless of
+// where the distribution actually lives. SigV4 handles the signing via
+// internal/awssig; this package only constructs the request envelope.
+package awscf
+
+import (
+	"bytes"
+	"context"
+	"encoding/xml"
+	"fmt"
+	"io"
+	"net/http"
+	"strings"
+	"time"
+
+	"github.com/rBurgett/techgo/internal/awssig"
+)
+
+// cloudFrontAPIVersion is the date-stamped CloudFront API namespace. Used
+// both in the request URL prefix and in the InvalidationBatch xmlns.
+const cloudFrontAPIVersion = "2020-05-31"
+
+// Client signs and sends CloudFront API requests.
+type Client struct {
+	Creds awssig.Credentials
+	// HTTP is the http client used for transport; defaults to
+	// http.DefaultClient when nil.
+	HTTP *http.Client
+	// Endpoint overrides the AWS CloudFront API endpoint. Empty (the
+	// default) uses https://cloudfront.amazonaws.com. Set it to point at
+	// LocalStack or an httptest.Server.
+	Endpoint string
+	// Now is the time source used for SigV4 dates and CallerReference;
+	// defaults to time.Now. Tests pin it to a fixed instant to keep
+	// canonical requests stable.
+	Now func() time.Time
+}
+
+// invalidationBatch is the request body for CreateInvalidation. We build it
+// with encoding/xml rather than a text template so the path strings inside
+// <Path> get properly XML-escaped — a stray '&' in a query-string-bearing
+// path would otherwise corrupt the document.
+type invalidationBatch struct {
+	XMLName         xml.Name `xml:"InvalidationBatch"`
+	XMLNS           string   `xml:"xmlns,attr"`
+	CallerReference string   `xml:"CallerReference"`
+	Paths           paths    `xml:"Paths"`
+}
+
+type paths struct {
+	Quantity int      `xml:"Quantity"`
+	Items    pathList `xml:"Items"`
+}
+
+type pathList struct {
+	Path []string `xml:"Path"`
+}
+
+// invalidationResponse is the response body of CreateInvalidation. The
+// returned <Invalidation> element holds the Id we surface to callers (and a
+// Status / CreateTime that we ignore for now).
+type invalidationResponse struct {
+	XMLName xml.Name `xml:"Invalidation"`
+	ID      string   `xml:"Id"`
+	Status  string   `xml:"Status"`
+}
+
+// CreateInvalidation submits an invalidation batch for distributionID and
+// returns the new invalidation's Id on success. Paths are normalized so each
+// starts with "/" (a leading slash is required by the CloudFront API; we
+// prepend one when callers forget). A unique-enough CallerReference is
+// generated from the current time so re-submitting the same paths picks up
+// the new batch instead of getting deduplicated.
+func (c *Client) CreateInvalidation(ctx context.Context, distributionID string, pathsIn []string) (string, error) {
+	if strings.TrimSpace(distributionID) == "" {
+		return "", fmt.Errorf("awscf: distributionID is required")
+	}
+	// NormalizePaths trims, ensures a leading '/', and drops blank entries.
+	// If nothing's left, fail rather than silently sending an empty batch.
+	normalized := NormalizePaths(pathsIn)
+	if len(normalized) == 0 {
+		return "", fmt.Errorf("awscf: at least one non-empty path is required")
+	}
+
+	now := c.now()
+	batch := invalidationBatch{
+		XMLNS:           "http://cloudfront.amazonaws.com/doc/" + cloudFrontAPIVersion + "/",
+		CallerReference: fmt.Sprintf("techgo-%d", now.UnixNano()),
+		Paths: paths{
+			Quantity: len(normalized),
+			Items:    pathList{Path: normalized},
+		},
+	}
+	xmlBody, err := marshalRequestXML(batch)
+	if err != nil {
+		return "", fmt.Errorf("awscf: encoding invalidation batch: %w", err)
+	}
+
+	url := strings.TrimRight(c.endpoint(), "/") + "/" + cloudFrontAPIVersion +
+		"/distribution/" + distributionID + "/invalidation"
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(xmlBody))
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Content-Type", "text/xml")
+	req.ContentLength = int64(len(xmlBody))
+	// CloudFront API is always us-east-1 / "cloudfront", regardless of
+	// where the distribution lives. SignRequest only sets the S3-only
+	// X-Amz-Content-Sha256 header for service=="s3", so this is correct
+	// even though the body is non-empty.
+	if err := awssig.SignRequest(req, xmlBody, "cloudfront", "us-east-1", c.Creds, now); err != nil {
+		return "", err
+	}
+
+	resp, err := c.httpClient().Do(req)
+	if err != nil {
+		return "", fmt.Errorf("awscf CreateInvalidation: %w", err)
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(resp.Body)
+	if resp.StatusCode != http.StatusCreated {
+		return "", fmt.Errorf("awscf CreateInvalidation: %s: %s", resp.Status, strings.TrimSpace(string(body)))
+	}
+	var parsed invalidationResponse
+	if err := xml.Unmarshal(body, &parsed); err != nil {
+		return "", fmt.Errorf("awscf CreateInvalidation: parsing response: %w", err)
+	}
+	if parsed.ID == "" {
+		return "", fmt.Errorf("awscf CreateInvalidation: response has no <Id>: %s", string(body))
+	}
+	return parsed.ID, nil
+}
+
+// marshalRequestXML returns the canonical XML form of a CloudFront API
+// request body: the standard <?xml ...?> declaration on its own line, then
+// the indented document.
+func marshalRequestXML(v any) ([]byte, error) {
+	var buf bytes.Buffer
+	buf.WriteString(xml.Header)
+	enc := xml.NewEncoder(&buf)
+	enc.Indent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return nil, err
+	}
+	return buf.Bytes(), nil
+}
+
+// normalizePath returns p (already trimmed by the caller) with exactly one
+// leading '/', so "/foo" and "foo" are equivalent.
+func normalizePath(p string) string {
+	if !strings.HasPrefix(p, "/") {
+		p = "/" + p
+	}
+	return p
+}
+
+// NormalizePaths is the exported batch form for the deploy command, which
+// receives a comma-separated --paths flag. Blank/whitespace-only entries are
+// DROPPED, not expanded — a trailing comma ("--paths=/a,/b,") must not
+// silently broaden the invalidation to the whole distribution. Requesting a
+// full invalidation is done explicitly with "/*" (the flag's default value),
+// never implicitly via an empty segment. If every entry is blank the result
+// is empty and CreateInvalidation rejects it (fail safe, not fail wide).
+func NormalizePaths(in []string) []string {
+	out := make([]string, 0, len(in))
+	for _, p := range in {
+		p = strings.TrimSpace(p)
+		if p == "" {
+			continue
+		}
+		out = append(out, normalizePath(p))
+	}
+	return out
+}
+
+func (c *Client) endpoint() string {
+	if c.Endpoint != "" {
+		return c.Endpoint
+	}
+	return "https://cloudfront.amazonaws.com"
+}
+
+func (c *Client) httpClient() *http.Client {
+	if c.HTTP != nil {
+		return c.HTTP
+	}
+	return http.DefaultClient
+}
+
+func (c *Client) now() time.Time {
+	if c.Now != nil {
+		return c.Now()
+	}
+	return time.Now()
+}
